@@ -1,0 +1,212 @@
+{
+  "main": {
+    "id": "3703cb69e9407ef4",
+    "type": "split",
+    "children": [
+      {
+        "id": "0d41985c4200f393",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "369d41c2ef3602da",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Java/Collections Framework.md",
+                "mode": "source",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "Collections Framework"
+            }
+          },
+          {
+            "id": "c1b0f1808df80d23",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Java/HashSet.md",
+                "mode": "preview",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "HashSet"
+            }
+          },
+          {
+            "id": "e11c2886229882e3",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Java/TreeSet.md",
+                "mode": "preview",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "TreeSet"
+            }
+          }
+        ],
+        "currentTab": 2
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "9b2dc6a76bdaa164",
+    "type": "split",
+    "children": [
+      {
+        "id": "338461dd802db9e5",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "aa74c3996d6db0d1",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "d1b0ea7eb3c450da",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "be9dcc225af7449b",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 200
+  },
+  "right": {
+    "id": "25c0790daedd393d",
+    "type": "split",
+    "children": [
+      {
+        "id": "3c26f75020c51cca",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "aa7f7034e7bf9b4d",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "Java/LinkedHashMap.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for LinkedHashMap"
+            }
+          },
+          {
+            "id": "cf715ac6487b2870",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "Java/LinkedHashMap.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from LinkedHashMap"
+            }
+          },
+          {
+            "id": "4381d9b6c8b1c7f9",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "233ff6f904b0737a",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "Java/LinkedHashMap.md"
+              },
+              "icon": "lucide-list",
+              "title": "Outline of LinkedHashMap"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false
+    }
+  },
+  "active": "e11c2886229882e3",
+  "lastOpenFiles": [
+    "Java/HashSet.md",
+    "Java/LinkedHashSet.md",
+    "Java/TreeSet.md",
+    "Java/Collections Framework.md",
+    "Java/TreeMap.md",
+    "Java/ArrayList.md",
+    "Java/LinkedHashMap.md",
+    "Java/HashMap.md",
+    "Java/PriorityQueue.md",
+    "Java/LinkedList.md",
+    "Spring Boot/Overview.md",
+    "Spring Boot",
+    "Untitled.canvas",
+    "Java",
+    "Learn"
+  ]
+}
