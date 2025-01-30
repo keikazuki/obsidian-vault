@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Sync.md",
+                "file": "Java/Collections Framework.md",
                 "mode": "preview",
                 "source": true
               },
               "icon": "lucide-file",
-              "title": "Sync"
+              "title": "Collections Framework"
             }
           }
         ]

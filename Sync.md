@@ -20,6 +20,7 @@
   git remote add origin https://github.com/YOUR_USERNAME/YOUR_OBSIDIAN_REPO.git
   git pull origin main  # If the repo already exists
   ```
+
    - Already done:
 	- Open a terminal and run:
   ```bash
