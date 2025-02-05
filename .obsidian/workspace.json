@@ -13,15 +13,44 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Java/Collections Framework.md",
+                "file": "Java/ArrayList.md",
                 "mode": "preview",
                 "source": true
               },
               "icon": "lucide-file",
-              "title": "Collections Framework"
+              "title": "ArrayList"
+            }
+          },
+          {
+            "id": "fee136178aed0092",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Sync.md",
+                "mode": "source",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "Sync"
+            }
+          },
+          {
+            "id": "b68eed5b08092332",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Untitled.md",
+                "mode": "preview",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "Untitled"
             }
           }
-        ]
+        ],
+        "currentTab": 2
       }
     ],
     "direction": "vertical"
@@ -40,7 +69,8 @@
             "state": {
               "type": "file-explorer",
               "state": {
-                "sortOrder": "alphabetical"
+                "sortOrder": "alphabetical",
+                "autoReveal": false
               },
               "icon": "lucide-folder-closed",
               "title": "Files"
@@ -163,9 +193,10 @@
       "github-sync:Sync with Remote": false
     }
   },
-  "active": "22679ff6fa971f7c",
+  "active": "b68eed5b08092332",
   "lastOpenFiles": [
     "Sync.md",
+    "Untitled.md",
     "Java/Collections Framework.md",
     "Java/HashSet.md",
     "Java/TreeSet.md",
