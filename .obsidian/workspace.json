@@ -118,9 +118,37 @@
               "icon": "lucide-file",
               "title": "Untitled 4"
             }
+          },
+          {
+            "id": "62d3552784255340",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Ask these.md",
+                "mode": "source",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "Ask these"
+            }
+          },
+          {
+            "id": "bbedac613391adf1",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Untitled 5.md",
+                "mode": "preview",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "Untitled 5"
+            }
           }
         ],
-        "currentTab": 7
+        "currentTab": 9
       }
     ],
     "direction": "vertical"
@@ -263,10 +291,12 @@
       "github-sync:Sync with Remote": false
     }
   },
-  "active": "d4b842122e6195c7",
+  "active": "bbedac613391adf1",
   "lastOpenFiles": [
-    "Untitled 3.md",
+    "Ask these.md",
+    "Untitled 5.md",
     "Untitled 4.md",
+    "Untitled 3.md",
     "Untitled.md",
     "Untitled 1.md",
     "Untitled 2.md",
