@@ -184,3 +184,54 @@ def get_status_table(request, model_id):
 - **Memory efficiency**: Processing done in **pandas-native operations** rather than row-by-row iteration.
 
 This version should **significantly improve performance** without changing functionality. 🚀
+
+
+Since your data column is a **JSONField** in Django, it's stored as a dictionary inside `all_df`. Pandas does not natively support operations on nested JSON fields in `groupby()` operations. This is causing the **KeyError** when trying to aggregate `"data"`.
+
+---
+
+### **Solution**
+
+1. **Extract the necessary values from JSON before grouping.**
+2. **Ensure all required columns exist before performing the `.groupby()` operation.**
+3. **Use `.get()` to prevent `KeyError` when accessing JSON fields.**
+
+---
+
+### **Fixed Code**
+
+Modify how `all_df` is created to extract only the required fields from the JSON column **before** grouping:
+
+```python
+# Ensure all_df is not empty
+if all_df.empty:
+    all_data_per_l2_entity = pd.DataFrame(columns=groupby_on + ["total_words", "total_texts", "last_insertion", "last_annotation"])
+else:
+    # Extract "text to translate" count from JSON column
+    all_df["total_texts"] = all_df["data"].apply(lambda x: 1 if isinstance(x, dict) else 0)
+
+    # Convert datetime columns
+    all_df["created_at"] = pd.to_datetime(all_df["created_at"], errors="coerce")
+    all_df["annotated_at"] = pd.to_datetime(all_df["annotated_at"], errors="coerce")
+
+    # Perform grouping
+    all_data_per_l2_entity = all_df.groupby(groupby_on).agg(
+        total_words=("word_count", "sum"),
+        total_texts=("total_texts", "sum"),  # Count occurrences safely
+        last_insertion=("created_at", "max"),
+        last_annotation=("annotated_at", "max"),
+    ).reset_index()
+```
+
+---
+
+### **Why This Fix Works**
+
+✅ **Extracts relevant fields** (`text to translate`) safely from JSON before grouping.  
+✅ **Handles missing JSON fields** using `.apply(lambda x: 1 if isinstance(x, dict) else 0)`.  
+✅ **Ensures proper datetime handling** before aggregation.  
+✅ **Avoids `KeyError` by explicitly checking for `"data"` in the DataFrame.**
+
+---
+
+### **Try this and let me know if the issue persists! 🚀**
