@@ -174,9 +174,23 @@
               "icon": "lucide-file",
               "title": "Untitled 7"
             }
+          },
+          {
+            "id": "2a17f7b95858c1b9",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Untitled 8.md",
+                "mode": "preview",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "Untitled 8"
+            }
           }
         ],
-        "currentTab": 11
+        "currentTab": 12
       }
     ],
     "direction": "vertical"
@@ -319,10 +333,11 @@
       "github-sync:Sync with Remote": false
     }
   },
-  "active": "231023b76b0b7bc0",
+  "active": "2a17f7b95858c1b9",
   "lastOpenFiles": [
-    "Untitled 6.md",
     "Untitled 7.md",
+    "Untitled 8.md",
+    "Untitled 6.md",
     "Untitled 5.md",
     "Ask these.md",
     "Untitled 4.md",
