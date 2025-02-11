@@ -1157,3 +1157,208 @@ That’s enough for your external JS to access `window.hl_progress` once the par
     - Contain only the HTML/JS snippet required for those partials (e.g., define `hl_progress`).
 
 This keeps your Django template minimal and places all dynamic logic in the external script.
+
+
+Below is an example of how you can make the `annotation_status.html` template both **cleaner** and **more maintainable**. Comments in the code highlight what’s happening.
+
+The key ideas:
+
+- **Separate concerns**: Keep only the markup and data-attributes in the template, and put **all** JavaScript logic (fetch calls, DOM manipulation) in your **external** `annotation_status.js`.
+- Use **meaningful IDs** and **data-attributes** to pass dynamic info (like URLs) to the JavaScript, rather than inline script blocks.
+- Keep the HTML structure simple and logical.
+
+---
+
+## A Cleaner `annotation_status.html`
+
+```html
+{# annotation_status.html #}
+{% extends 'layouts/base.html' %}
+{% load static %}
+
+{% block content %}
+<div class="container-fluid py-4">
+
+  <!-- 
+    1) A single outer container for everything 
+       so our JS can easily find it using an ID.
+    2) We store the partial endpoints in data-attributes. 
+  -->
+  <div 
+    id="annotation-status-container"
+    data-chart-url="{% url 'annotations_status_chart' model_id=nmt_model.id %}"
+    data-table-url="{% url 'annotations_status_table' model_id=nmt_model.id %}"
+    data-publish-url="{% url 'annotations_status_publish_now' model_id=nmt_model.id %}"
+  >
+    
+    <div class="row">
+      <div class="col-lg-12">
+        <div class="card">
+          
+          <div class="card-header pb-0">
+            <h5>Annotation Progress (at high level)</h5>
+          </div>
+          
+          <div class="card-body p-3 pb-0">
+            
+            <!-- 
+              CHART placeholder: We'll replace this spinner 
+              with the chart partial once it's fetched. 
+            -->
+            <div id="chart-container" class="d-flex justify-content-center">
+              <div class="spinner-grow text-secondary m-5" role="status">
+                <span class="visually-hidden">Loading Chart...</span>
+              </div>
+            </div>
+
+            <!-- 
+              TABLE placeholder: We'll replace this spinner 
+              with the table partial once it's fetched. 
+            -->
+            <div id="table-container" class="d-flex justify-content-center">
+              <div class="spinner-grow text-secondary m-5" role="status">
+                <span class="visually-hidden">Loading Table...</span>
+              </div>
+            </div>
+
+          </div> <!-- end card-body -->
+
+        </div> <!-- end card -->
+      </div> <!-- end col-lg-12 -->
+    </div> <!-- end row -->
+
+  </div> <!-- end annotation-status-container -->
+
+</div> <!-- end container-fluid -->
+
+<!-- 
+  We load our external JS at the bottom of the page. 
+  This file will handle all the logic:
+   - Reading the data-attributes for chart/table/publish endpoints.
+   - Fetching partials.
+   - Initializing the chart & table.
+   - Handling "Publish Now" clicks.
+-->
+<script src="{% static 'js/annotation_status.js' %}"></script>
+{% endblock content %}
+```
+
+### Explanation of Notable Points
+
+1. **`annotation-status-container`**:
+    
+    - We add a single ID to make it easy for our JS to grab it.
+    - We store multiple data-attributes (`data-chart-url`, `data-table-url`, `data-publish-url`) so all endpoint URLs are conveniently in one place.
+    - If you add or modify endpoints later, you just adjust the template.
+    - No inline JavaScript needed here.
+2. **Separate placeholders** (`chart-container`, `table-container`):
+    
+    - Each has a spinner or “Loading…” message that will be **replaced** by the relevant partial once it’s fetched via AJAX.
+3. **External Script** at the bottom:
+    
+    - Loads **once** everything else is in the DOM.
+    - No inline `<script>...</script>` blocks are necessary, keeping the HTML much cleaner.
+4. **Accessible text**:
+    
+    - For the spinner, using `<span class="visually-hidden">Loading Chart/Table…</span>` helps with screen readers.
+
+---
+
+## Corresponding `annotation_status.js`
+
+Your external JavaScript might look like this (simplified example):
+
+```js
+// annotation_status.js
+
+document.addEventListener("DOMContentLoaded", function() {
+  // Grab the container element
+  const container = document.getElementById("annotation-status-container");
+  // Pull the data-attributes
+  const chartUrl   = container.getAttribute("data-chart-url");
+  const tableUrl   = container.getAttribute("data-table-url");
+  const publishUrl = container.getAttribute("data-publish-url"); // in case you need it
+
+  // 1) Load the chart partial
+  fetch(chartUrl)
+    .then(response => response.text())
+    .then(html => {
+      // Insert chart snippet into #chart-container
+      document.getElementById("chart-container").innerHTML = html;
+
+      // Now init the chart if it exists
+      const ctxElement = document.getElementById("chart-line-hl-progress");
+      if (ctxElement) {
+        initialize_chart(ctxElement.getContext("2d"));
+      }
+    })
+    .catch(err => {
+      console.error("Error fetching chart partial:", err);
+      document.getElementById("chart-container").innerHTML =
+        "<p>Error loading chart</p>";
+    });
+
+  // 2) Load the table partial
+  fetch(tableUrl)
+    .then(response => response.text())
+    .then(html => {
+      // Insert table snippet into #table-container
+      document.getElementById("table-container").innerHTML = html;
+
+      // Initialize the table with DataTables
+      initialize_table();
+    })
+    .catch(err => {
+      console.error("Error fetching table partial:", err);
+      document.getElementById("table-container").innerHTML =
+        "<p>Error loading table</p>";
+    });
+});
+
+// ---------- Helper Functions -----------
+function initialize_chart(ctx) {
+  // The chart partial sets a global var hl_progress
+  // e.g. `var hl_progress = {{ hl_progress|safe }}` 
+  if (!window.hl_progress) {
+    console.warn("No hl_progress data found for chart!");
+    return;
+  }
+  // ... Chart.js logic ...
+}
+
+function initialize_table() {
+  $('[id^="data-table"]').DataTable({
+    order: [[3, "desc"]],
+    language: {
+      paginate: { previous: 'Prev', next: 'Next' }
+    }
+  });
+}
+
+// Example: "Publish Now" button logic
+function handlePublishAction(event) {
+  // ...
+  // Use `publishUrl` from container if needed,
+  // or each button might have its own data-url attribute, etc.
+}
+```
+
+This file:
+
+- Reads the container’s data-attributes.
+- Loads each partial in turn.
+- Calls `initialize_chart`/`initialize_table` once the partial HTML is appended to the DOM.
+- Provides any event handlers (`handlePublishAction`) needed for table actions, toasts, etc.
+
+---
+
+## Final Thoughts
+
+- This structure ensures your **HTML template** is minimal, maintainable, and accessible.
+- All JavaScript (fetch, chart, table logic) lives in a single external file.
+- If you have more partials in the future, you can keep reusing the same pattern:
+    1. Put a `<div>` placeholder + spinner in the main template.
+    2. Give it an ID, store the relevant endpoint in a data-attribute.
+    3. In `annotation_status.js`, fetch that endpoint, drop in the snippet, and initialize any needed JS.
+
+That’s it! With this approach, your `annotation_status.html` remains **clean** and **well-structured**—entirely focused on layout and basic placeholders, while the actual dynamic loading logic is contained in `annotation_status.js`.
