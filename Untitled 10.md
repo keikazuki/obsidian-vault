@@ -543,3 +543,411 @@ With these changes:
 - Each partial is fetched via AJAX, so the user sees the page’s skeleton (plus spinners) almost immediately, and each section populates independently. This can feel faster to the end user, especially if the chart data is large or if the table is large.
 
 You can, of course, tweak the approach: you could return JSON for the chart data only and build the chart fully on the client side. But the above approach—**separate partial templates** loaded asynchronously—is a straightforward way to split the logic and lighten the initial page load.
+
+Below is **one** way you can update your `annotation_status.js` (and usage) so it plays nicely with the new **split** partial approach:
+
+1. **Remove** or comment out the existing `$(document).ready(...)` block that uses `$(this).load(url, initialize_table)`.
+2. **Rely** on the new **fetch-based** approach in `annotation_status.html` to load each partial (table partial, chart partial) into two separate containers.
+3. **After** each partial is inserted into the DOM, **call** the appropriate function—either `initialize_table()` or `initialize_chart()`—to set up DataTables or the Chart.
+
+## 1. The Updated `annotation_status.js`
+
+Below is a revised script with **only** the needed functionality:
+
+```js
+/* annotation_status.js */
+
+// Called after the chart partial is loaded and <canvas> is in the DOM
+function initialize_chart(ctx) {
+  let labels = Object.keys(hl_progress);
+  let values = labels.map(lbl => hl_progress[lbl]["cumulative_sum"]);
+
+  var gradientStroke = ctx.createLinearGradient(0, 230, 0, 50);
+  gradientStroke.addColorStop(1, 'rgba(203,12,159,0.2)');
+  gradientStroke.addColorStop(0.2, 'rgba(72,72,176,0.0)');
+  gradientStroke.addColorStop(0, 'rgba(203,12,159,0)'); //purple
+
+  const data = {
+    labels: labels,
+    datasets: [
+      {
+        label: 'Validated HL Entities',
+        data: values,
+        tension: 0.1,
+        borderWidth: 0,
+        pointRadius: 0,
+        borderColor: "#cb0c9f",
+        borderWidth: 3,
+        backgroundColor: gradientStroke,
+        fill: true,
+        maxBarThickness: 6,
+      },
+    ],
+  };
+
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: false,
+      },
+    },
+    interaction: {
+      intersect: false,
+      mode: 'index',
+    },
+    scales: {
+      y: {
+        grid: {
+          drawBorder: false,
+          display: true,
+          drawOnChartArea: true,
+          drawTicks: false,
+          borderDash: [5, 5],
+        },
+        ticks: {
+          display: true,
+          padding: 10,
+          color: '#b2b9bf',
+          font: {
+            size: 11,
+            family: "Open Sans",
+            style: 'normal',
+            lineHeight: 2,
+          },
+        },
+      },
+      x: {
+        grid: {
+          drawBorder: false,
+          display: false,
+          drawOnChartArea: false,
+          drawTicks: false,
+          borderDash: [5, 5],
+        },
+        ticks: {
+          display: true,
+          color: '#b2b9bf',
+          padding: 20,
+          font: {
+            size: 11,
+            family: "Open Sans",
+            style: 'normal',
+            lineHeight: 2,
+          },
+        },
+      },
+    },
+  };
+
+  const config = {
+    type: 'line',
+    data: data,
+    options: options,
+  };
+
+  new Chart(ctx, config);
+}
+
+// Called after the table partial is loaded and the table is in the DOM
+function initialize_table() {
+  $('[id^="data-table"]').DataTable({
+    // You can adjust the default sort column, language, etc.
+    order: [[3, "desc"]],
+    language: {
+      paginate: {
+        previous: 'Prev',
+        next: 'Next'
+      }
+    }
+  });
+}
+
+// Handle the "Publish Now" button
+function handlePublishAction(event) {
+  let url = event.target.getAttribute("data-url");
+  let payload = event.target.getAttribute("data");
+  event.target.setAttribute("disabled", true);
+
+  let spinnerHTML = `
+    <div class="spinner-border" role="status">
+      <span class="visually-hidden">Loading...</span>
+    </div>`;
+  event.target.innerHTML = spinnerHTML;
+  console.log(payload);
+
+  fetch(url, {
+    method: "POST",
+    headers: {
+      "X-CSRFToken": getCookie('csrftoken'), // if needed, see note below
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ payload }),
+  })
+    .then((response) => response.json())
+    .then((data) => {
+      if (data.status == 400) {
+        toast("Error", data.message);
+        event.target.removeAttribute("disabled");
+        event.target.innerHTML = "Failure";
+      } else {
+        toast("Success", data.message + " Page reloads in 3 secs");
+        event.target.removeAttribute("disabled");
+        event.target.innerHTML = "Success";
+
+        // Refresh the page after a delay of 3 seconds
+        setTimeout(function () {
+          location.reload();
+        }, 3000);
+      }
+    })
+    .catch((error) => {
+      toast("Error", error.message);
+      event.target.removeAttribute("disabled");
+      event.target.innerHTML = "Failure";
+    });
+}
+
+// Basic toast function
+function toast(messageType, message) {
+  let type = messageType === "Success" ? "success" : "danger";
+  const iconError = `<img width="50" height="50" src="https://img.icons8.com/color/50/cancel.png" alt="cancel"/>`;
+  const iconSuccess = `<img width="40" height="40" src="https://img.icons8.com/office/40/checked--v1.png" alt="checked--v1"/>`;
+
+  let toastHTML = `
+    <div class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="toast-header">
+        ${messageType === "Success" ? iconSuccess : iconError}
+        <strong class="me-auto text-${type}">${messageType}</strong>
+        <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close">
+          X
+        </button>
+      </div>
+      <div class="toast-body text-${type}">
+        ${message}
+      </div>
+    </div>`;
+
+  const toastHolder = document.querySelector(".toast-holder");
+  toastHolder.innerHTML = DOMPurify.sanitize(toastHTML);
+
+  // Initialize & show any new toasts
+  var toastElList = [].slice.call(document.querySelectorAll('.toast'));
+  var toastList = toastElList.map(function (toastEl) {
+    return new bootstrap.Toast(toastEl);
+  });
+  toastList.forEach(toast => toast.show());
+}
+
+/*
+  If you need CSRF tokens with fetch, define a helper function to get it from cookies
+  or from your DOM. For example:
+
+  function getCookie(name) {
+    // from Django docs
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+      const cookies = document.cookie.split(';');
+      for (let i = 0; i < cookies.length; i++) {
+        const cookie = cookies[i].trim();
+        // Does this cookie string begin with the name we want?
+        if (cookie.substring(0, name.length + 1) === (name + '=')) {
+          cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+          break;
+        }
+      }
+    }
+    return cookieValue;
+  }
+*/
+```
+
+### Changes to Note
+
+- We **removed** (or commented out) the original `$(document).ready(...)` block that was calling `$('.card-body').load(...)`.
+- We kept `handlePublishAction`, `initialize_chart`, and `initialize_table` but expect **you** to call them only **after** you inject the partial HTML into the DOM.
+
+---
+
+## 2. In Your Main Template (`annotation_status.html`)
+
+You will now handle loading two partials (the chart partial and the table partial) in **two separate containers**. For example:
+
+```html
+{% extends 'layouts/base.html' %}
+{% load static %}
+{% block content %}
+<div class="container-fluid py-4">
+  <div class="row">
+    <div class="col-lg-12">
+      <div class="card">
+        <div class="card-header pb-0">
+          <h5>Annotation Progress (at high level)</h5>
+        </div>
+
+        <div class="card-body p-3 pb-0">
+          <!-- CHART placeholder -->
+          <div id="chart-container" class="d-flex justify-content-center">
+            <div class="spinner-grow text-secondary m-5" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+          </div>
+
+          <!-- TABLE placeholder -->
+          <div id="table-container" class="d-flex justify-content-center">
+            <div class="spinner-grow text-secondary m-5" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="{% static 'js/annotation_status.js' %}"></script>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function() {
+    // The two endpoints that return partial templates:
+    let chartUrl = "{% url 'dashboard:annotations_status_chart' model_id=nmt_model.id %}";
+    let tableUrl = "{% url 'dashboard:annotations_status_table' model_id=nmt_model.id %}";
+
+    // 1) Load chart partial
+    fetch(chartUrl)
+      .then(response => response.text())
+      .then(html => {
+        // Insert the partial
+        document.getElementById("chart-container").innerHTML = html;
+
+        // Now that the <canvas> is there, let's init the chart
+        let ctxElement = document.getElementById("chart-line-hl-progress");
+        if (ctxElement) {
+          let ctx = ctxElement.getContext("2d");
+          // Make sure hl_progress is available from the partial
+          initialize_chart(ctx);
+        }
+      })
+      .catch(err => {
+        console.error("Error fetching chart partial:", err);
+        document.getElementById("chart-container").innerHTML = "<p>Failed to load chart</p>";
+      });
+
+    // 2) Load table partial
+    fetch(tableUrl)
+      .then(response => response.text())
+      .then(html => {
+        // Insert the partial
+        document.getElementById("table-container").innerHTML = html;
+        // Now that the table is there, run DataTables initialization
+        initialize_table();
+      })
+      .catch(err => {
+        console.error("Error fetching table partial:", err);
+        document.getElementById("table-container").innerHTML = "<p>Failed to load table</p>";
+      });
+  });
+</script>
+{% endblock content %}
+```
+
+### Explanation
+
+- Right after each partial is inserted into the DOM, we call either `initialize_chart(...)` or `initialize_table()`.
+    
+- `initialize_chart` expects `hl_progress` to be present. In your new partial `status_chart.html`, you have a line like:
+    
+    ```html
+    <script>
+      var hl_progress = {{ hl_progress|safe }};
+    </script>
+    ```
+    
+    This ensures `hl_progress` is defined in the global scope by the time we call `initialize_chart(ctx)`.
+    
+- For the table partial, once the HTML is appended to `#table-container`, we call `initialize_table()` which uses jQuery DataTables to style/initialize any table with ID that starts with `data-table`.
+    
+
+---
+
+## 3. Confirm Your New Partials
+
+Make sure your two partial templates are truly **separate**:
+
+- `includes/status_chart.html` (containing only the chart `<canvas>` and the JS snippet that defines `hl_progress`).
+- `includes/status_table.html` (containing only the `<table>`, columns, and publish buttons).
+
+For example:
+
+**`includes/status_chart.html`**:
+
+```html
+{% if hl_progress|length > 0 %}
+  <div class="chart">
+    <canvas id="chart-line-hl-progress" class="chart-canvas" height="300"></canvas>
+  </div>
+{% else %}
+  <p>No chart data to display.</p>
+{% endif %}
+
+<script>
+  var hl_progress = {{ hl_progress|safe }};
+</script>
+```
+
+**`includes/status_table.html`**:
+
+```html
+<div class="table-responsive p-3">
+  <table id="data-table-{{nmt_model.id}}" class="table table-striped table-bordered" cellspacing="0" width="100%">
+    <thead>
+      <tr>
+        {% for col_name in col_names %}
+          <th class="text-uppercase text-secondary text-xxs font-weight-bolder opacity-7">{{ col_name }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          {% for cel in row %}
+            <td>
+              {% if "publishaction" in cel %}
+                <button data-url="{% url 'dashboard:annotations_status_publish_now' model_id=nmt_model.id %}"
+                        data="{{ cel }}"
+                        onclick="handlePublishAction(event)"
+                        class="btn btn-primary btn-sm {{forloop.counter0}}">
+                  Publish Now
+                </button>
+              {% else %}
+                <span class="text-secondary text-xs font-weight-bold">{{cel}}</span>
+              {% endif %}
+            </td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Place your toast-holder somewhere globally or here -->
+<div class="toast-holder position-fixed end-0 bottom-0 p-3"></div>
+```
+
+---
+
+## 4. Summary
+
+4. **annotation_status.js**:
+    - Keep your `initialize_chart`, `initialize_table`, `handlePublishAction`, and `toast` logic.
+    - **Remove** the old `$(document).ready()` that used `.load(...)`.
+5. **annotation_status.html**:
+    - Fetch the **chart partial** from `/chart/` → place HTML into `#chart-container` → call `initialize_chart()`.
+    - Fetch the **table partial** from `/table/` → place HTML into `#table-container` → call `initialize_table()`.
+6. **partials**:
+    - `status_chart.html`: Contains `<canvas>`, sets `hl_progress` in JS.
+    - `status_table.html`: Contains your table markup, columns, and the “Publish Now” button.
+
+That’s it! This structure will keep your code clean, ensure the chart and table are **loaded separately**, and let the page show up quickly with spinners, while the partials are fetched in parallel.
