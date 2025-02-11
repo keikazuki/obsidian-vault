@@ -85,3 +85,47 @@ This PR refactors and improves the `get_annotation_data` function in the `DataVi
 ---
 
 **Thank you** for taking the time to review this PR! Please let me know if there are any suggestions or areas we should revisit.
+
+
+Here is an example PR body section you could use that specifically highlights the **problems** you discovered and **the improvements** you implemented:
+
+---
+
+### Problems Identified & Improvements Made
+
+1. **Inefficient Data Queries**  
+    **Problem**: The original code did not use `select_related` or `values()` effectively. This caused multiple database hits and unnecessary data retrieval.  
+    **Improvement**: Added `select_related("form")` and `select_related("annotated_by", "validated_by")` along with `values()` to reduce the number of queries and improve performance.
+    
+2. **Handling Complex JSON Fields**  
+    **Problem**: The code assumed the JSON `data` field would always be a valid dict. Non-dict entries could lead to errors or unexpected behavior.  
+    **Improvement**: Implemented a check to ensure `data` is a dictionary before expanding and fallback to an empty dict otherwise. This makes the code more robust.
+    
+3. **Missing or Inconsistent Columns**  
+    **Problem**: Some columns (e.g., `validation`, `sample_id`) could be absent in certain edge cases, or naming varied across stages, causing potential issues for downstream processes.  
+    **Improvement**: Ensured all required columns exist (even if empty) and standardized column names (`id` → `sample_id`, etc.) for consistency.
+    
+4. **Non-Vectorized Word Count Calculation**  
+    **Problem**: Word counting relied on iterative `.apply(len)`, which can be slower for large data sets.  
+    **Improvement**: Switched to a vectorized approach using `df["text to translate"].str.split().str.len()`, improving performance significantly.
+    
+5. **Date & Time Formatting**  
+    **Problem**: The code handled date/time conversion in a somewhat manual manner, leading to repetitive logic and potential for null issues.  
+    **Improvement**: Used `pd.to_datetime(...).dt.strftime(...)` in a vectorized manner, simplifying the code and improving reliability.
+    
+6. **Complex Group-By Aggregations**  
+    **Problem**: The aggregator logic was more complex and less clear, making maintenance difficult.  
+    **Improvement**: Simplified to a single `.groupby("annotator")` with clear `agg` definitions (`total_words`, `total_texts`, `last_annotation`), improving readability and performance.
+    
+7. **Pending Status Computation**  
+    **Problem**: The original code repeatedly filtered the DataFrame to find pending samples.  
+    **Improvement**: Created a single boolean mask (`pending_mask`) to calculate pending texts and words in one pass, reducing redundancy.
+    
+8. **High-Level Key Counting**  
+    **Problem**: Counting unique high-level keys was done through multiple steps that could be streamlined.  
+    **Improvement**: Used `drop_duplicates()` on the subset of columns for high-level keys, making the logic more direct and scalable.
+    
+
+---
+
+By addressing these issues, the new implementation is more **efficient**, **readable**, and **maintainable**. It not only speeds up data retrieval but also ensures that edge cases (such as missing or invalid JSON data) are handled gracefully. Let me know if you have any questions or further suggestions!
