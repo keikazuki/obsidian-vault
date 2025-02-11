@@ -179,10 +179,14 @@
             "id": "2a17f7b95858c1b9",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "Untitled.md",
+                "mode": "source",
+                "source": true
+              },
               "icon": "lucide-file",
-              "title": "New tab"
+              "title": "Untitled"
             }
           }
         ],
@@ -331,8 +335,8 @@
   },
   "active": "2a17f7b95858c1b9",
   "lastOpenFiles": [
-    "Untitled 10.md",
     "Untitled.md",
+    "Untitled 10.md",
     "Untitled 9.md",
     "Untitled 8.md",
     "Untitled 7.md",
