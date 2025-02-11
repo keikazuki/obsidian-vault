@@ -951,3 +951,209 @@ For example:
     - `status_table.html`: Contains your table markup, columns, and the “Publish Now” button.
 
 That’s it! This structure will keep your code clean, ensure the chart and table are **loaded separately**, and let the page show up quickly with spinners, while the partials are fetched in parallel.
+
+
+Yes, you certainly can. The usual approach is:
+
+1. **Pass the partial-URLs** (or any other dynamic data) from your Django template into your HTML **as data-attributes** or global JS variables.
+2. **Move all JavaScript** that does the fetching (AJAX) and DOM manipulation into your external file (`annotation_status.js`).
+
+This way, you avoid having **any** inline script in `annotation_status.html`—you only include `<script src="..."></script>`.
+
+Below is a step-by-step example:
+
+---
+
+## 1. Add data-attributes in your main template
+
+In `annotation_status.html`, you can hold the partial URLs in HTML `data-attributes`. For example:
+
+```html
+{% extends 'layouts/base.html' %}
+{% load static %}
+{% block content %}
+
+<div class="container-fluid py-4">
+  <div 
+    id="annotation-status-container"
+    data-chart-url="{% url 'annotations_status_chart' model_id=nmt_model.id %}"
+    data-table-url="{% url 'annotations_status_table' model_id=nmt_model.id %}"
+  >
+    <!-- 
+      We can keep placeholders (spinners) or empty divs
+      for chart and table. 
+    -->
+    <div class="row">
+      <div class="col-lg-12">
+        <div class="card">
+          <div class="card-header pb-0">
+            <h5>Annotation Progress (at high level)</h5>
+          </div>
+
+          <div class="card-body p-3 pb-0">
+            <!-- CHART placeholder -->
+            <div id="chart-container" class="d-flex justify-content-center">
+              <div class="spinner-grow text-secondary m-5" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+            </div>
+
+            <!-- TABLE placeholder -->
+            <div id="table-container" class="d-flex justify-content-center">
+              <div class="spinner-grow text-secondary m-5" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+</div>
+
+<!-- Just load the external script (no inline JS needed). -->
+<script src="{% static 'js/annotation_status.js' %}"></script>
+{% endblock content %}
+```
+
+Points to note:
+
+- We gave the outer `div` an `id="annotation-status-container"`.
+- We stored the URLs for chart and table in `data-chart-url` and `data-table-url`.
+- The only JS reference is `annotation_status.js`. **No** inline script for fetching or DOM manipulation is needed here.
+
+---
+
+## 2. Implement the fetch/DOM logic in `annotation_status.js`
+
+Inside your **external** `annotation_status.js`, you can do something like:
+
+```js
+document.addEventListener("DOMContentLoaded", function() {
+  // 1) Grab the container element
+  const container = document.getElementById("annotation-status-container");
+
+  // 2) Pull the data-attributes (the partial URLs)
+  const chartUrl = container.getAttribute("data-chart-url");
+  const tableUrl = container.getAttribute("data-table-url");
+
+  // 3) Load the chart partial
+  fetch(chartUrl)
+    .then((response) => response.text())
+    .then((html) => {
+      // Insert the returned HTML snippet into #chart-container
+      document.getElementById("chart-container").innerHTML = html;
+
+      // Now that <canvas> is in the DOM, call your chart init
+      const ctxElement = document.getElementById("chart-line-hl-progress");
+      if (ctxElement) {
+        const ctx = ctxElement.getContext("2d");
+        // Make sure hl_progress is globally available from the partial
+        initialize_chart(ctx);
+      }
+    })
+    .catch((err) => {
+      console.error("Error fetching chart partial:", err);
+      document.getElementById("chart-container").innerHTML =
+        "<p>Failed to load chart</p>";
+    });
+
+  // 4) Load the table partial
+  fetch(tableUrl)
+    .then((response) => response.text())
+    .then((html) => {
+      // Insert the returned HTML snippet into #table-container
+      document.getElementById("table-container").innerHTML = html;
+
+      // DataTable initialization now that the table is in DOM
+      initialize_table();
+    })
+    .catch((err) => {
+      console.error("Error fetching table partial:", err);
+      document.getElementById("table-container").innerHTML =
+        "<p>Failed to load table</p>";
+    });
+});
+```
+
+That’s it—**all** the logic for fetching partials and inserting them into the DOM is now in your **external** JS file.
+
+---
+
+## 3. Keep your chart/table init code in the same external file
+
+If you haven’t already, you can define (or move) your helper functions in `annotation_status.js` as well. For example:
+
+```js
+function initialize_chart(ctx) {
+  // Chart code that references `hl_progress`
+  // This is fine because status_chart.html will set a 
+  // global var hl_progress = {...} in a <script> tag
+  // once it's injected into the DOM
+  let labels = Object.keys(hl_progress);
+  let values = labels.map(lbl => hl_progress[lbl]["cumulative_sum"]);
+
+  // ... rest of your Chart.js logic ...
+}
+
+function initialize_table() {
+  // jQuery DataTables setup
+  $('[id^="data-table"]').DataTable({
+    order: [[3, "desc"]],
+    language: {
+      paginate: {
+        previous: 'Prev',
+        next: 'Next'
+      }
+    }
+  });
+}
+
+// ... your handlePublishAction, toast, etc. ...
+```
+
+No need for inline `<script>` in your Django templates, aside from the minimal `<script src="{% static '...' %}"></script>`.
+
+---
+
+## 4. How `hl_progress` becomes available
+
+One subtlety: your chart partial (`status_chart.html`) might have code like:
+
+```html
+{% if hl_progress|length > 0 %}
+  <div class="chart">
+    <canvas id="chart-line-hl-progress" class="chart-canvas" height="300"></canvas>
+  </div>
+{% else %}
+  <p>No chart data to display.</p>
+{% endif %}
+
+<script>
+  // This will run as soon as the snippet is inserted into the DOM
+  // (and the browser parses it). 
+  // It places hl_progress into the global scope for `initialize_chart(...)`.
+  var hl_progress = {{ hl_progress|safe }};
+</script>
+```
+
+That’s enough for your external JS to access `window.hl_progress` once the partial is loaded. If you prefer a more modular approach, you can set it on a different object or do it all in the external script. But this works as-is.
+
+---
+
+## 5. Summary
+
+**Yes**, you can move all the JavaScript code into your **external** `annotation_status.js`. The only thing you usually need in your HTML templates are **data-attributes** (or hidden inputs, or global JS variables) so the external script knows what URLs to fetch or what data it needs. Then:
+
+1. **annotation_status.html**: No inline JS, just:
+    - Data-attributes for `chartUrl` and `tableUrl`.
+    - `<script src="annotation_status.js"></script>` at the bottom.
+2. **annotation_status.js**:
+    - Grabs the data-attributes,
+    - Calls `fetch(...)` to load the partials,
+    - Injects them into the DOM,
+    - Calls `initialize_chart(...)` / `initialize_table(...)`.
+3. **status_chart.html** & **status_table.html**:
+    - Contain only the HTML/JS snippet required for those partials (e.g., define `hl_progress`).
+
+This keeps your Django template minimal and places all dynamic logic in the external script.
