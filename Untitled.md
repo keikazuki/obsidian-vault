@@ -1,131 +1,88 @@
-Here's a concise yet informative template you can use in your PR description, highlighting the improvements and reasoning behind the changes:
+Below are a few suggestions for further optimizations beyond fixing the N+1 query in **get_status_table**:
 
----
-
-### Summary
-
-This PR refactors and improves the `get_annotation_data` function in the `DataView` class. The goal is to enhance performance, data handling robustness, and overall code readability. Below is a comparison of the key changes before and after the fix.
-
----
-
-### What Changed
-
-1. **Database Query Optimization**
+1. **Use `select_related` in `handle_publish_now`:**  
+    In the loop over samples, you access `s.track.form.name` for each sample. This can trigger extra queries per sample. You can optimize by fetching the related track and form in the initial query. For example:
     
-    - Used `select_related("form")` and `select_related("annotated_by", "validated_by")` to reduce the number of queries.
-    - Employed `values()` to retrieve only necessary fields.
-    - This helps minimize the overhead of multiple queries and speeds up data retrieval.
-2. **Data Expansion and Handling**
+    ```python
+    samples_qs = AnnotationTrackSample.objects.select_related("track", "track__form").filter(
+        track_id=track_id,
+        status__in=[
+            AnnotationTrackSample.Status.VALIDATED,
+            AnnotationTrackSample.Status.PUBLISH_FAIL,
+        ],
+    )
+    for s in samples_qs:
+        if s.track.form.name == "Catalog Correction-based Form":
+            # process as before
+    ```
     
-    - Replaced direct JSON expansion with a more robust approach using `pd.DataFrame.from_records(samples_qs)` followed by `pd.Series` expansion.
-    - Ensured potential non-dict entries in the JSONField are handled gracefully.
-3. **Column Management and Consistency**
+2. **Bulk Update Sample Statuses:**  
+    After calling the external API, the code loops over the samples to update their status and calls `save()` on each instance. This issues one query per sample. If you don’t need per-object signals or post-save hooks, you can use a bulk update to update all matching samples at once:
     
-    - Renamed columns (`id` to `sample_id`, etc.) to maintain consistency throughout the dataset.
-    - Ensured all required columns exist, even if they are empty, so downstream operations remain stable.
-4. **Date and Time Formatting**
+    ```python
+    from django.utils import timezone
     
-    - Used vectorized datetime parsing and formatting to improve performance and keep the code clean.
-    - Handled invalid or missing date strings consistently.
-5. **Word Count Calculation**
+    now = timezone.now()
+    updated = AnnotationTrackSample.objects.filter(pk__in=sample_ids).update(
+        status=AnnotationTrackSample.Status.PUBLISHED, updated_at=now
+    )
+    ```
     
-    - Used a vectorized approach (`df["text to translate"].str.split().str.len()`) for word counts, which is more efficient than iterative methods.
-6. **Aggregations & Group-By Statistics**
+    Similarly, in the failure branch, update all samples in one go.
     
-    - Per-annotator metrics are computed via a single `.groupby()` call with aggregated fields (`total_words`, `total_texts`, `last_annotation`).
-    - Reduced multiple passes over the dataset and improved clarity.
-7. **Pending Text and Word Computation**
+3. **Refactor Python Loops in Pandas:**  
+    In **get_status_table**, you build the `sample_data` list by iterating over `samples_qs` in a loop. You can make this a list comprehension for a small readability (and slight performance) boost:
     
-    - Used a vectorized mask (`pending_mask`) for statuses to compute pending data, making it more concise and scalable.
-8. **High-Level Key Counting**
+    ```python
+    sample_data = [
+        {
+            **a.data,
+            "track_id": a.track.id,
+            "track": a.track.name,
+            "created_at": a.created_at,
+            "annotated_at": a.annotated_at if a.annotated_by else None,
+            "status": a.status,
+        }
+        for a in samples_qs
+    ]
+    ```
     
-    - Calculated unique combinations of high-level key fields using `drop_duplicates()`, clarifying the logic for counting unique categories.
-
----
-
-### Why These Changes Are Needed
-
-- **Performance**: Reducing the number of queries and using vectorized Pandas operations significantly speeds up the process, especially when handling large datasets.
-- **Readability & Maintainability**: The new code is more structured, makes logical steps clear, and is easier for future contributors to extend or debug.
-- **Robustness**: Additional checks for non-dictionary data types in the JSON field prevent edge-case errors.
-
----
-
-### Testing & Validation
-
-1. **Local Testing**
+4. **Vectorize Percentage Calculations in Pandas:**  
+    The code uses `.apply()` with a lambda to compute the percentage completion for each status. If your DataFrame is large, this row-wise operation can be slower than a vectorized operation. For example, instead of:
     
-    - Verified the dataset renders correctly on the UI for both existing and newly created AnnotationTracks.
-    - Checked that all statistics (word counts, text counts, pending data) match the expected values from the old code.
-2. **Performance Benchmarks**
+    ```python
+    df2show[col_name] = df2show.apply(
+        lambda row: round((row[status_key] / row["total_words"] * 100) if row["total_words"] else 0, 2),
+        axis=1,
+    )
+    ```
     
-    - Compared response times for large track datasets before and after the fix. Observed a noticeable decrease in load and render time.
-3. **Edge Cases**
+    You might do something like:
     
-    - Tested with empty data (no AnnotationTrackSamples) to confirm the table gracefully shows zeros without errors.
-    - Ensured malformed or unexpected `data` fields do not break the DataFrame expansion.
-
----
-
-### How to Review
-
-- Focus on the transition to `select_related` and `values()`, ensuring no fields needed downstream are missing.
-- Confirm that the expanded DataFrame columns line up with the original columns.
-- Verify consistency with naming conventions (`sample_id` vs. `id`, etc.).
-- Check that the template's context retains the same functionality and covers all original output fields.
-
----
-
-### Next Steps
-
-- Merge and deploy to a staging environment for further testing with real data.
-- Monitor logs for any unexpected exceptions.
-- Prepare any necessary documentation updates if the data model or output format for downstream processes has changed.
-
----
-
-**Thank you** for taking the time to review this PR! Please let me know if there are any suggestions or areas we should revisit.
-
-
-Here is an example PR body section you could use that specifically highlights the **problems** you discovered and **the improvements** you implemented:
-
----
-
-### Problems Identified & Improvements Made
-
-1. **Inefficient Data Queries**  
-    **Problem**: The original code did not use `select_related` or `values()` effectively. This caused multiple database hits and unnecessary data retrieval.  
-    **Improvement**: Added `select_related("form")` and `select_related("annotated_by", "validated_by")` along with `values()` to reduce the number of queries and improve performance.
+    ```python
+    if status_key in df2show.columns:
+        df2show[col_name] = (
+            (df2show[status_key] / df2show["total_words"] * 100)
+            .fillna(0)
+            .round(2)
+        )
+        df2show.drop(columns=[status_key], inplace=True)
+    else:
+        df2show[col_name] = 0.0
+    ```
     
-2. **Handling Complex JSON Fields**  
-    **Problem**: The code assumed the JSON `data` field would always be a valid dict. Non-dict entries could lead to errors or unexpected behavior.  
-    **Improvement**: Implemented a check to ensure `data` is a dictionary before expanding and fallback to an empty dict otherwise. This makes the code more robust.
+5. **Datetime Formatting:**  
+    When formatting datetime columns, if the columns are already datetime types, you can use vectorized methods. For instance, instead of applying a lambda on each row:
     
-3. **Missing or Inconsistent Columns**  
-    **Problem**: Some columns (e.g., `validation`, `sample_id`) could be absent in certain edge cases, or naming varied across stages, causing potential issues for downstream processes.  
-    **Improvement**: Ensured all required columns exist (even if empty) and standardized column names (`id` → `sample_id`, etc.) for consistency.
+    ```python
+    df2show["last_insertion"] = df2show["last_insertion"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    df2show["last_annotation"] = df2show["last_annotation"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    ```
     
-4. **Non-Vectorized Word Count Calculation**  
-    **Problem**: Word counting relied on iterative `.apply(len)`, which can be slower for large data sets.  
-    **Improvement**: Switched to a vectorized approach using `df["text to translate"].str.split().str.len()`, improving performance significantly.
+    This is both more concise and efficient.
     
-5. **Date & Time Formatting**  
-    **Problem**: The code handled date/time conversion in a somewhat manual manner, leading to repetitive logic and potential for null issues.  
-    **Improvement**: Used `pd.to_datetime(...).dt.strftime(...)` in a vectorized manner, simplifying the code and improving reliability.
-    
-6. **Complex Group-By Aggregations**  
-    **Problem**: The aggregator logic was more complex and less clear, making maintenance difficult.  
-    **Improvement**: Simplified to a single `.groupby("annotator")` with clear `agg` definitions (`total_words`, `total_texts`, `last_annotation`), improving readability and performance.
-    
-7. **Pending Status Computation**  
-    **Problem**: The original code repeatedly filtered the DataFrame to find pending samples.  
-    **Improvement**: Created a single boolean mask (`pending_mask`) to calculate pending texts and words in one pass, reducing redundancy.
-    
-8. **High-Level Key Counting**  
-    **Problem**: Counting unique high-level keys was done through multiple steps that could be streamlined.  
-    **Improvement**: Used `drop_duplicates()` on the subset of columns for high-level keys, making the logic more direct and scalable.
+6. **Optional – Use `get_object_or_404`:**  
+    In your view’s `get()` and possibly in `publish_now`, you’re using `NMTModel.objects.get(pk=model_id)`. For better error handling (and potentially a slight performance benefit by reducing try/except boilerplate), consider using Django’s `get_object_or_404`.
     
 
----
-
-By addressing these issues, the new implementation is more **efficient**, **readable**, and **maintainable**. It not only speeds up data retrieval but also ensures that edge cases (such as missing or invalid JSON data) are handled gracefully. Let me know if you have any questions or further suggestions!
+Overall, these changes should help reduce the number of database queries and make your DataFrame operations more efficient, especially when dealing with large datasets.
