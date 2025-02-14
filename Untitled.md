@@ -17,7 +17,7 @@ in annotation_status_view.py
     ```
     
 in data_view.py
-- Below are several suggestions and minor code tweaks that could further optimize the remaining functions in **data_view.py**:
+- Below are several suggestion qs and minor code tweaks that could further optimize the remaining functions in **data_view.py**:
 
 ---
 
@@ -141,3 +141,168 @@ While the heavy-lifting (like fixing the N+1 problem in `get_annotation_data`) i
 - Use more efficient permission checks and standard Django utilities (like `get_object_or_404` and `timezone.now()`).
 
 Implementing these suggestions should help reduce overhead and improve both the performance and maintainability of your views.
+
+Below is a detailed explanation of potential optimizations in your **view.py** code—both in the two specific functions you mentioned and some broader suggestions for faster page loading.
+
+---
+
+## 1. Optimizing Specific Views
+
+### A. **Index View**
+
+#### **Observations & Potential Tweaks:**
+
+1. **Timezone Consistency:**
+    
+    - **Current:** You use `datetime.now()` and then convert to an aware datetime with `make_aware()`.
+    - **Optimization:** Use Django’s `timezone.now()` directly. This ensures your datetimes are already aware and aligns with Django’s timezone settings.
+        
+        ```python
+        from django.utils import timezone
+        now = timezone.now()
+        ```
+        
+2. **Avoid Redundant COUNT Queries:**
+    
+    - You calculate `len(annotated_data)`, `len(last_annotated_data)`, etc. Each call to `len(queryset)` may trigger a separate COUNT query.
+    - **Optimization:** Store counts in variables so that you don’t run the same query multiple times.
+        
+        ```python
+        total_count = annotated_data.count()
+        last_count = last_annotated_data.count()
+        prev_count = prev_annotated_data.count()
+        ```
+        
+    - Then compute percentages and deltas using these numbers.
+3. **Simplify the Percentage Calculation:**
+    
+    - The current inline expression for `"last_annotation_percent"` is a bit hard to read. Once you have your counts, you can compute it in a clearer way:
+        
+        ```python
+        if total_count:
+            last_annotation_percent = int(last_count / total_count * 100)
+        else:
+            last_annotation_percent = 100 if last_count else 0
+        ```
+        
+
+---
+
+### B. **get_core_data View**
+
+#### **Observations & Potential Tweaks:**
+
+4. **Avoiding N+1 Queries When Fetching Related Data:**
+    
+    - In your list comprehension for each model, you do:
+        
+        ```python
+        "annotation_forms": [
+            {"id": f.id, "name": f.name}
+            for f in m.annotationtrack_set.all()
+        ]
+        ```
+        
+    - **Optimization:** Use `prefetch_related` on your initial queryset so that Django loads the related `AnnotationTrack` objects in a single additional query instead of one query per model.
+        
+        ```python
+        models = NMTModel.objects.prefetch_related("annotationtrack_set").all()
+        ```
+        
+    - This change minimizes database hits and improves performance when iterating over each model’s annotation forms.
+5. **Check for Metrics Query:**
+    
+    - Currently, you assign:
+        
+        ```python
+        metrics = NMTModel.objects.all()
+        ```
+        
+    - If your intent is to return “metrics” different from models, double-check whether you’re querying the correct model. If the same model is used for both, consider renaming or combining the two lists to reduce confusion.
+
+---
+
+### C. **get_users_performance View**
+
+#### **Observations & Potential Tweaks:**
+
+6. **Use Efficient Count/Existence Checks:**
+    
+    - Instead of calling `len(samples)` (which triggers a COUNT query) repeatedly or iterating over filtered querysets in loops, use:
+        - `.count()` when you need the count.
+        - `.exists()` for a boolean check.
+    - For example, in the loop over tracks:
+        
+        ```python
+        pending_count = track_samples.filter(status=AnnotationTrackSample.Status.PENDING).count()
+        loaded_count = track_samples.filter(annotated_by=u, status=AnnotationTrackSample.Status.LOADED).count()
+        if pending_count and loaded_count:
+            current_tracks_names.append(track.name)
+        ```
+        
+    - This can be more efficient than repeatedly converting querysets to lists or using `len()` on them.
+7. **Minimize Repeated Queries per User and Track:**
+    
+    - You iterate over each user and then for each user you query `AnnotationTrack.objects.filter(annotators=u)`.
+    - **Optimization:** Consider prefetching the related tracks or even annotating counts at the database level. For example, if you need to know the number of pending or loaded samples per track, you might use Django’s aggregation to do this in one query per user rather than one query per track.
+    - Alternatively, if the data set isn’t huge, you could cache results of subqueries within the loop.
+8. **Raw SQL for Word Count:**
+    
+    - You use a RawSQL expression to calculate the word count in the `"text to translate"` field. This can be computationally expensive if run on a large number of rows.
+    - **Optimization Considerations:**
+        - If the word count is used frequently, consider storing or caching the value in the database (for example, by adding a computed column or updating it via a signal).
+        - Otherwise, ensure that your database can handle the calculation and that you’re not processing more rows than necessary.
+9. **Sorting the Results:**
+    
+    - At the end, you sort the result dictionary based on the daily average. This is done in Python.
+    - **Optimization:** If the number of users is small (as in your hard-coded list), this is acceptable. For larger sets, consider sorting at the database level using annotated fields.
+
+---
+
+## 2. Additional General Optimizations for Faster Page Loading
+
+Beyond view-level query optimizations, consider these broader strategies:
+
+10. **Caching:**
+    
+    - **Per-View or Template Fragment Caching:**  
+        Use Django’s caching framework to cache expensive query results or rendered HTML fragments that change infrequently.
+    - **Low-Level Cache API:**  
+        Cache data that doesn’t change often (like a list of models with pre-fetched related objects).
+11. **Database Indexing:**
+    
+    - Ensure that columns used frequently in filters (such as `status`, `annotated_at`, and foreign keys like `annotated_by`) are indexed. Django automatically indexes foreign keys, but you may need additional indexes for other fields.
+12. **Reduce Redundant Calculations:**
+    
+    - When you calculate aggregate values (such as counts or averages), store them in local variables to avoid recalculating them multiple times.
+13. **Prefetch/Select Related:**
+    
+    - Always consider using `select_related` and `prefetch_related` to fetch related data in fewer queries. This is especially useful in list comprehensions or loops that access related models.
+14. **Asynchronous Tasks:**
+    
+    - For heavy operations (e.g., complex aggregations over large data sets or operations involving external API calls), consider offloading to asynchronous tasks using Celery or Django Q. This keeps the response time for web requests short.
+15. **Pagination and Lazy Loading:**
+    
+    - If any view returns a large dataset to be rendered in a table or list, use pagination. This reduces the amount of data processed and sent to the client, speeding up the page load.
+16. **Static File Optimization:**
+    
+    - Ensure your static assets (CSS, JavaScript, images) are optimized, minified, and served via a CDN if possible. Although this isn’t in your Python code, it has a significant impact on overall page load performance.
+
+---
+
+## Summary
+
+- **Index View:**  
+    Use `timezone.now()` and cache counts to avoid multiple COUNT queries.
+    
+- **get_core_data:**  
+    Prefetch related objects (using `prefetch_related("annotationtrack_set")`) to avoid N+1 queries when iterating over related annotation forms.
+    
+- **get_users_performance:**  
+    Replace repeated use of `len(queryset)` with `.count()` or `.exists()`, and consider aggregating counts at the database level to avoid nested loops issuing many queries.
+    
+- **General Optimizations:**  
+    Use caching, proper indexing, and asynchronous processing when applicable. Also, consider pagination and front-end optimizations for a smoother user experience.
+    
+
+Implementing these adjustments should reduce database load, lower response times, and make your views more efficient overall.
