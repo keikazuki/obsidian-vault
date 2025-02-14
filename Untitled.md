@@ -1,6 +1,6 @@
-Below are a few suggestions for further optimizations beyond fixing the N+1 query in **get_status_table**:
 
-1. **Use `select_related` in `handle_publish_now`:**  
+in annotation_status_view.py
+-. **Use `select_related` in `handle_publish_now`:**  
     In the loop over samples, you access `s.track.form.name` for each sample. This can trigger extra queries per sample. You can optimize by fetching the related track and form in the initial query. For example:
     
     ```python
@@ -16,73 +16,128 @@ Below are a few suggestions for further optimizations beyond fixing the N+1 quer
             # process as before
     ```
     
-2. **Bulk Update Sample Statuses:**  
-    After calling the external API, the code loops over the samples to update their status and calls `save()` on each instance. This issues one query per sample. If you don’t need per-object signals or post-save hooks, you can use a bulk update to update all matching samples at once:
+in data_view.py
+- Below are several suggestions and minor code tweaks that could further optimize the remaining functions in **data_view.py**:
+
+---
+
+### 1. Optimize `get_add_data_form`
+
+- **Use `select_related` for the Track’s Form:**  
+    When fetching the track, you later access `track.form.name`. You can reduce a join by doing:
+    
+    ```python
+    track = AnnotationTrack.objects.select_related("form").get(pk=track_id)
+    ```
+    
+- **Minimize Repeated Conversions:**  
+    You’re converting `track.id` to a string (and escaping it) multiple times. Save it in a variable for clarity and reuse:
+    
+    ```python
+    track_id_str = html.escape(str(track.id))
+    ```
+    
+    Then use `track_id_str` for both the prefix and context.
+    
+
+---
+
+### 2. Optimize the `get` Method
+
+- **Use `get_object_or_404`:**  
+    Instead of `NMTModel.objects.get(pk=model_id)`, you might consider using Django’s `get_object_or_404` for more robust error handling.
+    
+- **Preload Related Data on Tracks:**  
+    If the template uses track details like the associated form or model, you can reduce additional queries by selecting related fields:
+    
+    ```python
+    nmt_model = get_object_or_404(NMTModel, pk=model_id)
+    tracks = (
+        AnnotationTrack.objects.filter(model=nmt_model, form__form_type=form_type)
+        .select_related("form", "model")
+        .order_by("priority")
+    )
+    ```
+    
+
+---
+
+### 3. Optimize `add_data`
+
+- **Fetch the Track with Related Data:**  
+    Since you access both `track.form` and `track.model` multiple times, fetch them upfront:
+    
+    ```python
+    track = AnnotationTrack.objects.select_related("form", "model").get(pk=track_id)
+    ```
+    
+- **Cache Repeated Query Results for Form Fields:**  
+    In conditions where you check for fields like `"product id"`, `"gtin"`, or `"fields to correct"`, avoid multiple filtering calls. For example:
+    
+    ```python
+    product_field = l2_fields.filter(name="product id").first()
+    gtin_field = l2_fields.filter(name="gtin").first()
+    fields_to_correct_field = l2_fields.filter(name="fields to correct").first()
+    
+    if product_field and gtin_field and fields_to_correct_field:
+        wpids = form.cleaned_data[f"field_{product_field.id}"].splitlines()
+        gtins = form.cleaned_data[f"field_{gtin_field.id}"].splitlines()
+        fields_to_correct = form.cleaned_data[f"field_{fields_to_correct_field.id}"].splitlines()
+        incoming_df = prepare_incoming_df(wpids, gtins, fields_to_correct)
+    ```
+    
+    Similarly, for the `"seed queries"` check, retrieve the field once instead of calling `l2_fields.filter(name='seed queries').first()` repeatedly.
+    
+- **Simplify Existing Samples Query:**  
+    Instead of filtering by `track__model=track.model, track__name=track.name`, you can filter directly by the track:
+    
+    ```python
+    existing_samples = AnnotationTrackSample.objects.filter(track=track).values("data", "id")
+    existing_df = pd.DataFrame(
+        [
+            {**sample["data"], "sample_id": sample["id"]}
+            for sample in existing_samples
+        ]
+    ).drop_duplicates(primary_fields)
+    ```
+    
+    Using `.values(...)` avoids instantiating full model objects if you only need the data.
+    
+- **Consider Refactoring Long Conditional Logic:**  
+    The multiple `elif` branches (for different track types) can be refactored into a dispatch table or helper functions. This isn’t a performance change per se but will improve maintainability.
+    
+
+---
+
+### 4. Optimize `validate_sample`
+
+- **Check User Permission Efficiently:**  
+    Instead of loading all annotators to check membership, use a query to see if the current user is in the set:
+    
+    ```python
+    if sample.track.annotators.filter(pk=request.user.pk).exists() or request.user.is_superuser:
+    ```
+    
+    This avoids building a list of all annotators, which can be especially useful if the list grows large.
+    
+- **Use Timezone-Aware Datetimes:**  
+    If your project uses time zones (and it’s generally a good practice), use Django’s timezone utilities:
     
     ```python
     from django.utils import timezone
-    
-    now = timezone.now()
-    updated = AnnotationTrackSample.objects.filter(pk__in=sample_ids).update(
-        status=AnnotationTrackSample.Status.PUBLISHED, updated_at=now
-    )
+    # ...
+    sample.validated_at = timezone.now()
     ```
-    
-    Similarly, in the failure branch, update all samples in one go.
-    
-3. **Refactor Python Loops in Pandas:**  
-    In **get_status_table**, you build the `sample_data` list by iterating over `samples_qs` in a loop. You can make this a list comprehension for a small readability (and slight performance) boost:
-    
-    ```python
-    sample_data = [
-        {
-            **a.data,
-            "track_id": a.track.id,
-            "track": a.track.name,
-            "created_at": a.created_at,
-            "annotated_at": a.annotated_at if a.annotated_by else None,
-            "status": a.status,
-        }
-        for a in samples_qs
-    ]
-    ```
-    
-4. **Vectorize Percentage Calculations in Pandas:**  
-    The code uses `.apply()` with a lambda to compute the percentage completion for each status. If your DataFrame is large, this row-wise operation can be slower than a vectorized operation. For example, instead of:
-    
-    ```python
-    df2show[col_name] = df2show.apply(
-        lambda row: round((row[status_key] / row["total_words"] * 100) if row["total_words"] else 0, 2),
-        axis=1,
-    )
-    ```
-    
-    You might do something like:
-    
-    ```python
-    if status_key in df2show.columns:
-        df2show[col_name] = (
-            (df2show[status_key] / df2show["total_words"] * 100)
-            .fillna(0)
-            .round(2)
-        )
-        df2show.drop(columns=[status_key], inplace=True)
-    else:
-        df2show[col_name] = 0.0
-    ```
-    
-5. **Datetime Formatting:**  
-    When formatting datetime columns, if the columns are already datetime types, you can use vectorized methods. For instance, instead of applying a lambda on each row:
-    
-    ```python
-    df2show["last_insertion"] = df2show["last_insertion"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    df2show["last_annotation"] = df2show["last_annotation"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    ```
-    
-    This is both more concise and efficient.
-    
-6. **Optional – Use `get_object_or_404`:**  
-    In your view’s `get()` and possibly in `publish_now`, you’re using `NMTModel.objects.get(pk=model_id)`. For better error handling (and potentially a slight performance benefit by reducing try/except boilerplate), consider using Django’s `get_object_or_404`.
     
 
-Overall, these changes should help reduce the number of database queries and make your DataFrame operations more efficient, especially when dealing with large datasets.
+---
+
+### Summary
+
+While the heavy-lifting (like fixing the N+1 problem in `get_annotation_data`) is already done, these improvements can help:
+
+- Reduce repeated queries by using `select_related` and caching query results.
+- Simplify and vectorize DataFrame operations where possible.
+- Use more efficient permission checks and standard Django utilities (like `get_object_or_404` and `timezone.now()`).
+
+Implementing these suggestions should help reduce overhead and improve both the performance and maintainability of your views.
