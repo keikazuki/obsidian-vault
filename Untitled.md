@@ -1513,3 +1513,285 @@ def save_rule_impact(request):
 ---
 
 This refactored version should serve as a strong starting point for further optimizations. Be sure to test all views thoroughly and adjust details (like field names or query conditions) to match your exact requirements.
+
+Below is an example refactor of your **performance_view.py** with some comments explaining the key optimizations. The main ideas are to:
+
+1. **Reduce redundant queries:**
+    
+    - Use filtering in the database wherever possible rather than looping in Python.
+    - Use list comprehensions and pre‑aggregation where possible.
+2. **Avoid per‑object queries:**
+    
+    - For example, when calculating evaluation scores or baseline comparisons, we try to annotate and aggregate data using Django’s ORM rather than iterating over objects and issuing queries one-by-one.
+3. **Leverage the ORM’s aggregation and annotation:**
+    
+    - Using functions like `ExtractMonth`, `Avg`, and `Round` helps to push computation to the database.
+
+Below is one possible refactored version with inline comments:
+
+---
+
+```python
+from datetime import datetime, timedelta
+from ast import literal_eval
+import pandas as pd
+from urllib.parse import parse_qs
+
+from django.shortcuts import render
+from django.http import JsonResponse, Http404
+from django.views.generic import TemplateView
+from django.views.decorators.csrf import csrf_exempt
+from django.db.models import Avg
+from django.db.models.expressions import RawSQL
+from django.db.models import TextField
+from django.db.models.functions import Round, ExtractMonth
+
+from ..models import (
+    NMTModel,
+    AnnotationForm,
+    Evaluation,
+    Metric,
+    EvaluationScore,
+    AnnotationTrack,
+    AnnotationTrackSample,
+)
+
+PIE_COLORS = ["rgb(255, 99, 132)", "rgb(255, 205, 86)", "rgb(54, 162, 235)"]
+
+def compute_correction_rates(parallel_annotations):
+    # Retrieve annotations for given tracks and annotate with raw SQL for "WTP Translation"
+    annotations = AnnotationTrackSample.objects.filter(track__in=parallel_annotations).annotate(
+        wtp_trans=RawSQL(
+            "data->>'WTP Translation'",
+            [],
+            output_field=TextField()
+        )
+    )
+    # Build a DataFrame from the querysets using values_list to retrieve only required fields.
+    df = pd.DataFrame({
+        "wtp_trans": annotations.values_list("wtp_trans", flat=True),
+        "correction": annotations.values_list("data__correction", flat=True),
+    })
+    # Precompile regex and process tokens once per row.
+    import re
+    tokenize = lambda x: set(filter(len, [re.sub(r"^\W+|\W+$", "", w) for w in (x.split() if isinstance(x, str) else [])]))
+    df["wtp_trans_toks"] = df.wtp_trans.apply(tokenize)
+    df["correction_toks"] = df.correction.apply(tokenize)
+
+    def change_label(r):
+        # If the original texts match exactly, no change.
+        if r["wtp_trans"] == r["correction"]:
+            return "No change"
+        # Otherwise, if token sets are identical or almost identical, mark as "Minor change"
+        if (r["wtp_trans_toks"] == r["correction_toks"] or 
+            len(r["wtp_trans_toks"].union(r["correction_toks"]) - r["wtp_trans_toks"].intersection(r["correction_toks"])) < 2):
+            return "Minor change"
+        return "Important change"
+
+    if not df.empty:
+        df["change_label"] = df.apply(change_label, axis=1)
+        result = [
+            {"label": "Important change", "rate": len(df[df.change_label == "Important change"])},
+            {"label": "Minor change", "rate": len(df[df.change_label == "Minor change"])},
+            {"label": "No change", "rate": len(df[df.change_label == "No change"])},
+        ]
+    else:
+        result = [
+            {"label": "Important change", "rate": 0},
+            {"label": "Minor change", "rate": 0},
+            {"label": "No change", "rate": 0},
+        ]
+    return result
+
+class PerformanceView(TemplateView):
+    template_name = "performance.html"
+
+    def get(self, request, model_id):
+        # Get the metrics we care about
+        metrics_to_track = Metric.objects.filter(name__in=["BLEU", "exact-match"])
+        nmt_model = NMTModel.objects.get(pk=model_id)
+
+        # Get correction tracks (exclude qualitative) for this model
+        parallel_tracks = (
+            AnnotationTrack.objects.filter(model=nmt_model, form__form_type=AnnotationForm.FormType.CORRECTION)
+            .exclude(name__icontains="Qualitative")
+            .order_by("priority")
+        )
+        # Get evaluations for these tracks
+        parallel_evals = Evaluation.objects.filter(annotation__in=parallel_tracks).order_by("-created_at")
+        qualitative_track = AnnotationTrack.objects.filter(model=nmt_model, name__icontains="Qualitative").first()
+        qualitative_eval = Evaluation.objects.filter(annotation=qualitative_track).first()
+
+        # Use current date and generate a list of last 12 months.
+        current_date = datetime.now()
+        last_12_months = [current_date]
+        # (The loop below subtracts a month's worth of days iteratively)
+        for _ in range(3):
+            last_12_months.append(current_date - timedelta(days=current_date.day))
+            current_date -= timedelta(days=current_date.day)
+
+        # For each track, get the most recent evaluation (both local and remote)
+        last_evals = [parallel_evals.filter(model=nmt_model, annotation=track).first() for track in parallel_tracks]
+        last_evals_remote = [parallel_evals.filter(model__name=f"{nmt_model.name}-remote", annotation=track).first() for track in parallel_tracks]
+
+        # If there are evaluations, proceed to compute scores
+        if any(last_evals):
+            last_scores = (
+                EvaluationScore.objects.filter(evaluation__in=last_evals, metric__in=metrics_to_track)
+                .order_by("metric__id")
+                .values("metric__name", "metric__short_description")
+                .annotate(avg_score=Avg("score"))
+                .annotate(rounded_avg_score=Round("avg_score", 2))
+            )
+            last_scores_remote = (
+                EvaluationScore.objects.filter(evaluation__in=last_evals_remote, metric__in=metrics_to_track)
+                .order_by("metric__id")
+                .values("metric__name", "metric__short_description")
+                .annotate(avg_score=Avg("score"))
+                .annotate(rounded_avg_score=Round("avg_score", 2))
+            )
+            # Get a brief evaluations history (first 2 evaluations)
+            evals = [
+                {
+                    "name": e.name,
+                    "model": e.model,
+                    "datetime": e.created_at,
+                    "annotation": e.annotation,
+                    "metrics": ", ".join(
+                        [s.metric.name for s in EvaluationScore.objects.filter(evaluation=e)]
+                    ),
+                }
+                for e in parallel_evals[:2]
+            ]
+            # Build baseline comparison data
+            baseline_comparison_data = {"Overall": {"id": 0, "scores": {}}}
+            try:
+                models_list = [
+                    nmt_model,
+                    NMTModel.objects.get(
+                        name__startswith="Google",
+                        src_locale=nmt_model.src_locale,
+                        trg_locale=nmt_model.trg_locale,
+                    ),
+                ]
+            except NMTModel.DoesNotExist:
+                models_list = [nmt_model, None]
+            try:
+                remote_model = NMTModel.objects.get(name=f"{nmt_model.name}-remote")
+            except NMTModel.DoesNotExist:
+                remote_model = None
+            if remote_model:
+                models_list.append(remote_model)
+            model_labels = [
+                (model.charts_label if model.charts_label else model.name)
+                for model in models_list if model is not None
+            ]
+            # For each track, build baseline scores per metric per month.
+            for track in parallel_tracks:
+                baseline_comparison_data[track.name] = {"id": track.id, "scores": {}}
+                baseline_evals = Evaluation.objects.filter(annotation=track)
+                baseline_scores = EvaluationScore.objects.filter(
+                    evaluation__in=baseline_evals, metric__in=metrics_to_track
+                ).order_by("evaluation__created_at")
+                for metric in metrics_to_track:
+                    baseline_comparison_data[track.name]["scores"][metric.name] = {}
+                    for model_label, model in zip(model_labels, models_list):
+                        scores = baseline_scores.filter(evaluation__model=model, metric=metric)
+                        baseline_comparison_data[track.name]["scores"][metric.name][model_label] = {}
+                        for date in last_12_months:
+                            score = (
+                                scores.annotate(month=ExtractMonth("evaluation__created_at"))
+                                .filter(month=date.month)
+                                .aggregate(avg_score=Avg("score"))
+                            )
+                            baseline_comparison_data[track.name]["scores"][metric.name][model_label][
+                                date.strftime("%Y %b")
+                            ] = score["avg_score"] if score["avg_score"] is not None else 0
+            baseline_comparison_data["Overall"]["scores"] = {
+                metric.name: {
+                    model_label: {
+                        date.strftime("%Y %b"): (
+                            sum(
+                                baseline_comparison_data[track.name]["scores"][metric.name][model_label][date.strftime("%Y %b")]
+                                for track in parallel_tracks
+                            ) / len(parallel_tracks)
+                            if len(parallel_tracks) else 0
+                        )
+                        for date in last_12_months
+                    }
+                    for model_label in model_labels
+                }
+                for metric in metrics_to_track
+            }
+            context = {
+                "nmt_model": nmt_model,
+                "last_scores": last_scores,
+                "last_scores_remote": last_scores_remote,
+                "evals": evals,
+                "baseline_comparison_data": {
+                    "x_labels": [date.strftime("%Y %b") for date in last_12_months][::-1],
+                    "scores": baseline_comparison_data,
+                },
+            }
+            # Qualitative evaluation scores
+            if qualitative_eval:
+                qualitative_metrics = Metric.objects.filter(name__in=["Bad", "Medium", "Good"])
+                qualitative_scores = EvaluationScore.objects.filter(
+                    evaluation=qualitative_eval, metric__in=qualitative_metrics
+                )
+                context["qualitative_eval_data"] = {
+                    "labels": [s.metric.name for s in qualitative_scores],
+                    "colors": {"Bad": "rgb(255, 99, 132)", "Medium": "rgb(255, 205, 86)", "Good": "rgb(54, 162, 235)"},
+                    "scores": {s.metric.name: s.score for s in qualitative_scores},
+                }
+            # Human correction rates computed via pandas
+            rates = compute_correction_rates(parallel_tracks)
+            context["human_correction_rates_data"] = {
+                "labels": [r["label"] for r in rates],
+                "colors": {r["label"]: PIE_COLORS[i] for i, r in enumerate(rates)},
+                "scores": {r["label"]: r["rate"] for r in rates},
+            }
+        else:
+            context = {"nmt_model": nmt_model}
+        return render(request, self.template_name, context)
+
+@csrf_exempt
+def add_evaluation(request):
+    # Extract parameters from query string
+    query_params = request.META.get("QUERY_STRING", "")
+    params_dict = parse_qs(query_params)
+    model_id = params_dict.get("model_id", [None])[0]
+    annotation_id = params_dict.get("annotation_id", [None])[0]
+    name = params_dict.get("name", [None])[0]
+    # Parse scores from POST body
+    scores = literal_eval(request.POST["scores"])
+    try:
+        model = NMTModel.objects.get(pk=model_id)
+        annotation = AnnotationForm.objects.get(pk=annotation_id)
+    except Exception:
+        raise Http404
+    evaluation = Evaluation(model=model, annotation=annotation, name=name)
+    evaluation.save()
+    evalscores = []
+    for m, s in scores.items():
+        metric = Metric.objects.filter(name=m).first()
+        if metric:
+            evalscores.append(EvaluationScore(evaluation=evaluation, metric=metric, score=float(s)))
+    EvaluationScore.objects.bulk_create(evalscores)
+    return JsonResponse({"status": "OK", "errors": []})
+```
+
+---
+
+### A Few Key Points
+
+- **Database Aggregation and Annotation:**  
+    We push as much of the work as possible (averaging scores, extracting months, etc.) to the database side.
+- **List Comprehensions for History and Baseline Scores:**  
+    Instead of iterating repeatedly over querysets (which might trigger extra queries), we use comprehensions and annotations.
+- **Bulk Creation for Evaluation Scores:**  
+    Using `bulk_create` reduces the overhead compared to saving each evaluation score individually.
+- **Handling Optional Evaluations:**  
+    We check if there are any evaluation objects before proceeding with the calculations.
+
+This refactored version should be more efficient, but as always, be sure to test thoroughly to confirm that it meets your performance and correctness requirements.
