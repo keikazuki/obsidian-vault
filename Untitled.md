@@ -1099,3 +1099,5 @@ def download_annotation_data(request):
 ---
 
 This “after” code should help ensure that you’re reducing redundant queries and processing, making the view functions more efficient and easier to maintain. Be sure to test each function to confirm that the behavior remains the same in your application.
+
+
