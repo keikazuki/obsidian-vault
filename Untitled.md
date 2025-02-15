@@ -306,3 +306,266 @@ Beyond view-level query optimizations, consider these broader strategies:
     
 
 Implementing these adjustments should reduce database load, lower response times, and make your views more efficient overall.
+
+Below is an **example** of how your `view.py` **could look** after incorporating the optimizations we discussed. This example attempts to keep the same functionality while demonstrating:
+
+1. Using Django’s `timezone.now()` instead of `datetime.now()` + `make_aware()`.
+2. Storing `.count()` results in local variables instead of using `len(queryset)`.
+3. Using `prefetch_related` in `get_core_data` to avoid N+1 queries.
+4. Replacing repeated calls to `len()` on a queryset with `.count()` or `.exists()`.
+5. Slightly cleaner calculations for percentages and sets.
+
+Feel free to adjust any variable names or additional logic to match your application’s exact needs and style.
+
+---
+
+```python
+from datetime import timedelta
+
+from django.shortcuts import render, redirect
+from django.contrib.auth.views import LoginView
+from admin_soft.forms import LoginForm
+from django.http.response import JsonResponse
+from django.contrib.auth.decorators import login_required
+from django.views.decorators.csrf import csrf_exempt
+from django.utils import timezone
+from django.contrib.auth.models import User
+from django.db.models import Count, Avg, Max, Min, Sum
+from django.db.models.functions import TruncDay
+from django.db.models.expressions import RawSQL
+from django.db.models import IntegerField
+
+from ..models import NMTModel, AnnotationTrackSample, AnnotationTrack
+
+
+def index(request):
+    # If user in wg_users group, redirect
+    if request.user.groups.filter(name="wg_users").exists():
+        return redirect("dashboard:white_glove_form")
+
+    # Otherwise load annotated data
+    annotated_data = AnnotationTrackSample.objects.filter(
+        status__in=[
+            AnnotationTrackSample.Status.ANNOTATED,
+            AnnotationTrackSample.Status.VALIDATED,
+            AnnotationTrackSample.Status.PUBLISHED,
+        ]
+    )
+
+    # Use Django's timezone-aware now
+    now = timezone.now()
+
+    # Compute start/end of last week
+    start_of_last_week = now - timedelta(days=now.weekday() + 7)
+    end_of_last_week = start_of_last_week + timedelta(days=6)
+
+    # Compute start/end of previous week
+    start_of_prev_week = now - timedelta(days=now.weekday() + 14)
+    end_of_prev_week = start_of_prev_week + timedelta(days=6)
+
+    # Filter the relevant annotated_data
+    last_annotated_data = annotated_data.filter(
+        annotated_at__range=(start_of_last_week, end_of_last_week)
+    )
+    prev_annotated_data = annotated_data.filter(
+        annotated_at__range=(start_of_prev_week, end_of_prev_week)
+    )
+
+    # Convert to set of user IDs (or user objects); no need to materialize entire rows
+    last_active_users = set(last_annotated_data.values_list("annotated_by", flat=True))
+    prev_active_users = set(prev_annotated_data.values_list("annotated_by", flat=True))
+
+    # Store counts to avoid multiple queries
+    total_count = annotated_data.count()
+    last_count = last_annotated_data.count()
+
+    if total_count:
+        last_annotation_percent = int(last_count / total_count * 100)
+    else:
+        # If total_count is 0, fallback logic
+        last_annotation_percent = 100 if last_count else 0
+
+    return render(
+        request,
+        "index.html",
+        {
+            "segment": "index",
+            "annotatated_data": total_count,
+            "last_annotation_percent": last_annotation_percent,
+            "active_users": last_active_users,
+            # Simple difference in active users between two weeks
+            "active_users_delta": len(last_active_users) - len(prev_active_users),
+        },
+    )
+
+
+def profile(request):
+    if request.user.groups.filter(name="wg_users").exists():
+        return redirect("dashboard:white_glove_form")
+    else:
+        return render(request, "includes/profile.html", {"segment": "profile"})
+
+
+@login_required
+def get_current_user(request):
+    user = request.user
+    return JsonResponse({"username": user.username, "email": user.email})
+
+
+# Authentication
+class UserLoginView(LoginView):
+    template_name = "accounts/login.html"
+    form_class = LoginForm
+
+    def get_success_url(self):
+        # Change the redirect URL here
+        return "/profile/"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        # Retrieve the flag from the query parameters
+        show_register_opt = (
+            self.request.GET.get("show_register_opt", "false").lower() == "true"
+        )
+        context["show_register_opt"] = show_register_opt
+        return context
+
+
+@csrf_exempt
+def get_core_data(request):
+    # Use prefetch_related to avoid N+1 queries on annotationtrack_set
+    models = NMTModel.objects.prefetch_related("annotationtrack_set").all()
+
+    # Double-check if 'metrics' really should be the same queryset as 'models'
+    metrics = NMTModel.objects.all()
+
+    return JsonResponse(
+        {
+            "models": [
+                {
+                    "id": m.id,
+                    "name": m.name,
+                    "src_locale": m.src_locale,
+                    "trg_locale": m.trg_locale,
+                    "annotation_forms": [
+                        {"id": track.id, "name": track.name}
+                        for track in m.annotationtrack_set.all()
+                    ],
+                }
+                for m in models
+            ],
+            # If metrics are truly also NMTModel, keep as is;
+            # otherwise, change this to query the correct model/table.
+            "metrics": [{"id": s.id, "name": s.name} for s in metrics],
+        }
+    )
+
+
+@csrf_exempt
+def get_users_performance(request):
+    # Hardcoded user list
+    user_list = [
+        "DianaLiceaga",
+        "sparvaiz",
+        "JulioMadrid",
+        "nicole.aguilera0@walmart.com",
+        "EldaBenet",
+        "TaniaAckerman",
+    ]
+
+    users = User.objects.filter(username__in=user_list)
+
+    result = {}
+    for u in users:
+        # Samples annotated by this user
+        samples_qs = AnnotationTrackSample.objects.filter(annotated_by=u)
+
+        # Instead of len(samples_qs), use .count()
+        total_samples = samples_qs.count()
+        if total_samples > 0:
+            current_tracks_names = []
+            # Tracks that this user is assigned to
+            user_tracks = AnnotationTrack.objects.filter(annotators=u)
+
+            # For each track, check if user still has pending samples
+            for track in user_tracks:
+                track_samples = AnnotationTrackSample.objects.filter(track=track)
+                # Use count(), not len()
+                pending_count = track_samples.filter(
+                    status=AnnotationTrackSample.Status.PENDING
+                ).count()
+                loaded_count = track_samples.filter(
+                    annotated_by=u, status=AnnotationTrackSample.Status.LOADED
+                ).count()
+
+                if pending_count and loaded_count:
+                    current_tracks_names.append(track.name)
+
+            # Annotate each sample with a raw-sql-based word count
+            samples_qs = samples_qs.annotate(
+                text2translate_word_count=RawSQL(
+                    """
+                    LENGTH(Cast(data->>'text to translate' as TEXT))
+                    - LENGTH(REPLACE(Cast(data->>'text to translate' as TEXT), ' ', ''))
+                    + 1
+                    """,
+                    [],
+                    output_field=IntegerField(),
+                )
+            )
+
+            # Group by day of annotation
+            row_each_day = (
+                samples_qs.annotate(day=TruncDay("annotated_at"))
+                .values("day")
+                .annotate(text_count=Count("id"))
+                .annotate(word_count=Sum("text2translate_word_count"))
+            )
+
+            # Aggregate day-level stats
+            performance = row_each_day.aggregate(
+                samples_avg=Avg("text_count"),
+                samples_max=Max("text_count"),
+                samples_min=Min("text_count"),
+                words_avg=Avg("word_count"),
+                words_max=Max("word_count"),
+                words_min=Min("word_count"),
+            )
+
+            result[u.username] = {
+                "all": total_samples,
+                "daily_work": performance,
+                "current_tracks": current_tracks_names,
+            }
+
+    # Sort the result dictionary by 'samples_avg' descending
+    # If 'samples_avg' is None for some user, handle gracefully with a fallback
+    def sort_key(item):
+        username = item[0]
+        data = item[1]
+        daily_work = data["daily_work"]
+        # If daily_work['samples_avg'] is None, default to 0
+        return daily_work["samples_avg"] or 0
+
+    sorted_result = dict(
+        sorted(result.items(), key=sort_key, reverse=True)
+    )
+
+    return JsonResponse(sorted_result)
+```
+
+### Notable Changes
+
+6. **Replaced `datetime.now()`** with `timezone.now()` in `index` view.
+7. **Used `.count()`** to get the size of a queryset instead of `len(queryset)`.
+8. **Stored counts** in variables so we only query once instead of multiple times.
+9. **In `get_core_data`**, used `prefetch_related("annotationtrack_set")` to avoid N+1 queries.
+10. **In `get_users_performance`**:
+    - Changed `len(samples_qs)` to `samples_qs.count()`.
+    - Used `.count()` in track checks (`pending_count` and `loaded_count`).
+    - Added a simple `sort_key` function to handle cases where `samples_avg` might be `None`.
+11. **Kept** the general structure and logic intact so it should work the same way as before.
+
+---
+
+This code example should serve as a good starting point if you want to check that everything is **“done correctly”** according to the previous suggestions. Of course, you can further **adjust, refactor, or clean up** based on your project’s specific requirements and coding style.
