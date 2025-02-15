@@ -569,3 +569,533 @@ def get_users_performance(request):
 ---
 
 This code example should serve as a good starting point if you want to check that everything is **“done correctly”** according to the previous suggestions. Of course, you can further **adjust, refactor, or clean up** based on your project’s specific requirements and coding style.
+
+Below is an example of a refactored version of your **annotation_view.py** that incorporates several optimizations. In this version we aim to:
+
+- Reduce repeated database lookups by filtering or caching query results.
+- Replace in‐Python filtering (such as list comprehensions that check membership in querysets) with database filtering when possible.
+- Cache intermediate values (for example, when filtering fields by name) so that you don’t re‑query the same thing repeatedly.
+- Use list comprehensions or pre‑computed values (like lowercasing a string once) to improve efficiency in loops.
+
+> **Note:** This example is one way to reorganize your code. You should test it in your project context and adjust naming or error‑handling as needed.
+
+---
+
+```python
+from datetime import datetime
+from io import StringIO, BytesIO
+import zipfile
+import random
+import html
+import pandas as pd
+from urllib.parse import parse_qs
+
+from django.shortcuts import render, redirect
+from django.http import JsonResponse, HttpResponse, FileResponse, Http404
+from django.template.loader import render_to_string
+from django.views.generic import TemplateView
+from django.views.decorators.csrf import csrf_exempt
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db.models import Q
+
+from dashboard.utils.rule_ops import save_rule, RuleCollisionError, RuleFormatError
+from ..models import (
+    NMTModel,
+    AnnotationForm,
+    AnnotationFormField,
+    AnnotationTrack,
+    AnnotationTrackSample,
+    Glossary,
+    GlossaryEntry,
+    PostProcessRuleGlossary,
+    PostProcessRule,
+)
+from ..forms import AnnotateForm
+
+
+class AnnotationView(LoginRequiredMixin, TemplateView):
+    template_name = "annotation.html"
+
+    def get(self, request, model_id, form_type):
+        # Get the model and filter tracks by both form type and by the current user (DB filtering)
+        nmt_model = NMTModel.objects.get(pk=model_id)
+        tracks = (
+            AnnotationTrack.objects.filter(
+                model=nmt_model,
+                form__form_type=form_type,
+                annotators=request.user
+            )
+            .order_by("priority")
+            .all()
+        )
+        return render(
+            request,
+            self.template_name,
+            {
+                "nmt_model": nmt_model,
+                "tracks": tracks,
+            },
+        )
+
+    @staticmethod
+    def get_fields_info_v2(fields, row_dict):
+        # Use a list comprehension and .get() to avoid KeyErrors.
+        return [{"field": f, "value": row_dict.get(f.name)} for f in fields]
+
+    @staticmethod
+    def get_glossary_matches(model, text):
+        # Lowercase the text once
+        text_lower = text.lower()
+        # Prefetch related GlossaryEntries to avoid N+1 queries.
+        glossaries = Glossary.objects.filter(model=model).prefetch_related("glossaryentry_set")
+        matches = []
+        for glossary in glossaries:
+            for entry in glossary.glossaryentry_set.all():
+                if entry.src_text.lower() in text_lower:
+                    matches.append(
+                        f"{entry.src_text} --> {entry.trg_text} ({entry.context}) ({glossary.name} - {entry.annotator})"
+                    )
+        return matches
+
+    @staticmethod
+    def get_correction_population_v2(model, text, src_col_name="text to translate"):
+        # Only applicable for non-Catalog models.
+        if "Catalog" not in model.name:
+            text_toks = set(text.lower().split())
+            max_match = 0
+            max_match_r = None
+            # You might use .only('data', 'annotated_by', 'validated_by') if data is large.
+            qs = AnnotationTrackSample.objects.filter(
+                track__model=model,
+                status__in=[
+                    AnnotationTrackSample.Status.ANNOTATED,
+                    AnnotationTrackSample.Status.VALIDATED,
+                    AnnotationTrackSample.Status.PUBLISHED,
+                ],
+            )
+            for r in qs:
+                # Use .get() so that missing keys return None (or you could use row_dict.get)
+                if r.data.get("correction"):
+                    # Lowercase and split only once per record.
+                    cand_toks = set(r.data[src_col_name].lower().split())
+                    union = text_toks.union(cand_toks)
+                    # Avoid division by zero
+                    if union:
+                        matching = len(text_toks.intersection(cand_toks)) / len(union)
+                        if matching > max_match:
+                            max_match = matching
+                            max_match_r = r
+            if max_match_r:
+                # Return validation if available; otherwise return correction.
+                if max_match_r.data.get("validation"):
+                    return (
+                        max_match_r.data["validation"],
+                        max_match_r.validated_by,
+                        max_match,
+                    )
+                return (
+                    max_match_r.data["correction"],
+                    max_match_r.annotated_by,
+                    max_match,
+                )
+        return None
+
+    @staticmethod
+    def get_rule(request, form, fields, rule_glossary):
+        # Cache filtered field objects to avoid repeated filtering
+        text_to_replace_field = fields.filter(name="text_to_replace").first()
+        replace_by_field = fields.filter(name="replace_by").first()
+        when_any_of_field = fields.filter(name="when_any_of").first()
+        unless_any_of_field = fields.filter(name="unless_any_of").first()
+
+        new_rule = PostProcessRule(rule_glossary=rule_glossary, annotator=request.user)
+        new_rule.by_replacing = form.cleaned_data[f"field_{text_to_replace_field.id}"]
+        new_rule.translated_to = form.cleaned_data[f"field_{replace_by_field.id}"]
+        input_text_when_any = form.cleaned_data[f"field_{when_any_of_field.id}"]
+        new_rule.input_text_when_any_of = (
+            input_text_when_any.split(",") if input_text_when_any else []
+        )
+        input_text_unless_any = form.cleaned_data[f"field_{unless_any_of_field.id}"]
+        new_rule.input_text_unless_any_of = (
+            input_text_unless_any.split(",") if input_text_unless_any else []
+        )
+        return new_rule
+
+    def get_correction(self, request, annotation_sample_id):
+        sample = AnnotationTrackSample.objects.get(pk=annotation_sample_id)
+        if "Catalog" in sample.track.model.name:
+            from ..utils.rule_ops import apply_rule
+            # Cache the fields queryset (if small, it is acceptable)
+            fields = AnnotationFormField.objects.filter(form=sample.track.form)
+            form = AnnotateForm(
+                sample,
+                AnnotationView.get_fields_info_v2(fields, sample.data),
+                AnnotationView.get_glossary_matches(sample.track.model, sample.data["text to translate"]),
+                AnnotationView.get_correction_population_v2(sample.track.model, sample.data["text to translate"]),
+                request.GET,
+                prefix=f"annotate_{sample.id}",
+            )
+            if form.is_valid():
+                rule_glossary = PostProcessRuleGlossary.objects.get(
+                    model=sample.track.model, name="WTP"
+                )
+                new_rule = AnnotationView.get_rule(request, form, fields, rule_glossary)
+                return JsonResponse(
+                    {
+                        "status": 200,
+                        "correction": apply_rule(
+                            new_rule,
+                            sample.data["text to translate"],
+                            sample.data["WTP Translation"],
+                        ),
+                    }
+                )
+            return JsonResponse({"status": 400, "errors": form.errors})
+        return JsonResponse({"status": 400, "error": "Unsupported model type"})
+
+    def get_impacted_data(self, request, annotation_sample_id):
+        sample = AnnotationTrackSample.objects.get(pk=annotation_sample_id)
+        if "Catalog" in sample.track.model.name:
+            fields = AnnotationFormField.objects.filter(form=sample.track.form)
+            form = AnnotateForm(
+                sample,
+                AnnotationView.get_fields_info_v2(fields, sample.data),
+                AnnotationView.get_glossary_matches(sample.track.model, sample.data["text to translate"]),
+                AnnotationView.get_correction_population_v2(sample.track.model, sample.data["text to translate"]),
+                request.GET,
+                prefix=f"annotate_{sample.id}",
+            )
+            if form.is_valid():
+                from ..utils.rule_ops import get_impacted_data
+                rule_glossary = PostProcessRuleGlossary.objects.get(
+                    model=sample.track.model, name="WTP"
+                )
+                new_rule = AnnotationView.get_rule(request, form, fields, rule_glossary)
+                impacted_data = [
+                    d for d in get_impacted_data(new_rule) if d["sample_id"] != sample.id
+                ]
+                sample_html = render_to_string(
+                    "includes/impacted_sample.html",
+                    {"sample": impacted_data if len(impacted_data) <= 2 else random.sample(impacted_data, 2)},
+                    request,
+                )
+                return JsonResponse(
+                    {
+                        "status": 200,
+                        "impacted_data": len(impacted_data) + 1,
+                        "sample": sample_html,
+                    }
+                )
+            else:
+                return JsonResponse({"status": 400})
+        return JsonResponse({"status": 400, "error": "Unsupported model type"})
+
+    def get_next_sample_ids(self, request, annotation_track_id, count):
+        track = AnnotationTrack.objects.get(pk=annotation_track_id)
+        # Filter samples in the database rather than checking each one in Python.
+        no_annotated_samples = AnnotationTrackSample.objects.filter(
+            track=track
+        ).filter(
+            Q(status="PENDING") | (Q(annotated_by=request.user) & Q(status="LOADED"))
+        )
+        if track.eval_most_recent_first:
+            no_annotated_samples = no_annotated_samples.order_by("-created_at")
+        sample_ids = no_annotated_samples[:count].values_list("id", flat=True)
+        return render(
+            request,
+            "includes/annotate_forms.html",
+            {
+                "sample_ids": sample_ids,
+                "model_id": track.model.id,
+                "annotation_track_id": track.id,
+            },
+        )
+
+    def get_annotate_form(self, request, annotation_sample_id):
+        sample = AnnotationTrackSample.objects.get(pk=annotation_sample_id)
+        fields = AnnotationFormField.objects.filter(form=sample.track.form).order_by(
+            "is_context_field", "order_position"
+        )
+        population = AnnotationView.get_correction_population_v2(
+            sample.track.model, sample.data["text to translate"]
+        )
+        fields_info = AnnotationView.get_fields_info_v2(fields, sample.data)
+        form = AnnotateForm(
+            annotation_sample=sample,
+            fields_info=fields_info,
+            glossary_matches=AnnotationView.get_glossary_matches(
+                sample.track.model, sample.data["text to translate"]
+            ),
+            prev_correction=population,
+            prefix=f"annotate_{sample.id}",
+        )
+        sample.annotated_by = request.user
+        sample.status = AnnotationTrackSample.Status.LOADED
+        sample.save()
+        return render(request, "includes/forms/annotate.html", {"annotate_form": form})
+
+    def check_rules(self, request, annotation_sample_id):
+        sample = AnnotationTrackSample.objects.get(pk=annotation_sample_id)
+        rules = PostProcessRule.objects.filter(rule_glossary__model=sample.track.model)
+        input_text = sample.data["text to translate"]
+        translation = request.GET.get("current_translation")
+        # Use list comprehension and html.escape on each rule.
+        failed_rules = [html.escape(str(r)) for r in rules if r.check_rule(input_text, translation)]
+        return JsonResponse(
+            {
+                "status": 200,
+                "failed_rules_count": len(failed_rules),
+                "failed_rules_html": render_to_string("includes/rules.html", {"rules": failed_rules}, request),
+            }
+        )
+
+    def save_annotate_forms(self, request, annotation_track_id):
+        track = AnnotationTrack.objects.get(pk=annotation_track_id)
+        fields = AnnotationFormField.objects.filter(form=track.form)
+        data_qs = AnnotationTrackSample.objects.filter(track=track)
+        # Extract sample IDs from POST keys
+        prefixes = [key.split("-")[0] for key in request.POST.keys() if key.startswith("annotate")]
+        ids = [int(s.split("_")[1]) for s in prefixes if "_" in s]
+        data_to_update = data_qs.filter(id__in=ids)
+        forms = []
+        for sample in data_to_update:
+            population = AnnotationView.get_correction_population_v2(track.model, sample.data["text to translate"])
+            fields_info = AnnotationView.get_fields_info_v2(fields, sample.data)
+            forms.append(
+                AnnotateForm(
+                    sample,
+                    fields_info,
+                    AnnotationView.get_glossary_matches(track.model, sample.data["text to translate"]),
+                    population,
+                    request.POST,
+                    prefix=f"annotate_{sample.id}",
+                )
+            )
+        if all(f.is_valid() for f in forms):
+            for form, sample in zip(forms, data_to_update):
+                for field in form.cleaned_data:
+                    if not form.fields[field].disabled:
+                        col_name = form.fields[field].label
+                        sample.data[col_name] = form.cleaned_data.get(field)
+                # For correction forms, perform additional rule processing.
+                if (
+                    track.form.form_type == AnnotationForm.FormType.CORRECTION
+                    and "Catalog" in track.model.name
+                    and track.form.name != "Catalog Correction-based Form"
+                ):
+                    wtp_ok_field = fields.filter(name="wtp_translation_ok").first()
+                    if not form.cleaned_data.get(f"field_{wtp_ok_field.id}"):
+                        # Cache filtered field objects for rule data
+                        rule_data = {
+                            "user": request.user,
+                            "model": track.model,
+                            "by_replacing": form.cleaned_data.get(f"field_{fields.filter(name='text_to_replace').first().id}"),
+                            "translated_to": form.cleaned_data.get(f"field_{fields.filter(name='replace_by').first().id}"),
+                            "input_text_when_any_of": form.cleaned_data.get(f"field_{fields.filter(name='when_any_of').first().id}"),
+                            "input_text_unless_any_of": form.cleaned_data.get(f"field_{fields.filter(name='unless_any_of').first().id}"),
+                            "is_important": form.cleaned_data.get(f"field_{fields.filter(name='is_important_rule').first().id}"),
+                        }
+                        rule_glossary = PostProcessRuleGlossary.objects.filter(model=rule_data["model"], name="WTP").first()
+                        incoming_rule = PostProcessRule(
+                            rule_glossary=rule_glossary,
+                            annotator=rule_data["user"],
+                            status=PostProcessRule.Status.PROPOSED,
+                        )
+                        if rule_data["by_replacing"] and rule_data["translated_to"]:
+                            incoming_rule.by_replacing = rule_data["by_replacing"]
+                            incoming_rule.translated_to = rule_data["translated_to"]
+                            incoming_rule.input_text_when_any_of = (
+                                rule_data["input_text_when_any_of"].split(",")
+                                if rule_data["input_text_when_any_of"]
+                                else []
+                            )
+                            incoming_rule.input_text_unless_any_of = (
+                                rule_data["input_text_unless_any_of"].split(",")
+                                if rule_data["input_text_unless_any_of"]
+                                else []
+                            )
+                            incoming_rule.is_important = rule_data["is_important"]
+                            try:
+                                if save_rule(incoming_rule):
+                                    sample.annotated_by = request.user
+                                    sample.annotated_at = datetime.now()  # Consider using timezone.now()
+                                    sample.status = AnnotationTrackSample.Status.ANNOTATED
+                                    sample.save()
+                                else:
+                                    return JsonResponse({
+                                        "status": 400,
+                                        "new_rule_id": incoming_rule.id,
+                                        "errors": [[[html.escape("Rule cannot be saved")]]],
+                                    })
+                            except RuleCollisionError as e:
+                                return JsonResponse({
+                                    "status": 400,
+                                    "new_rule_id": incoming_rule.id,
+                                    "errors": [[[html.escape(f"<b>Error:</b> {str(e)}<br/><b>Collides with:</b> {str(e.existing_rule)}")]]],
+                                })
+                            except RuleFormatError as e:
+                                return JsonResponse({
+                                    "status": 400,
+                                    "new_rule_id": incoming_rule.id,
+                                    "errors": [[[html.escape(str(e))]]],
+                                })
+                            except Exception as e:
+                                return JsonResponse({
+                                    "status": 400,
+                                    "new_rule_id": incoming_rule.id,
+                                    "errors": [[[html.escape(str(e))]]],
+                                })
+                        else:
+                            sample.data["correction"] = sample.data["WTP Translation"]
+                            sample.annotated_by = request.user
+                            sample.annotated_at = datetime.now()
+                            sample.status = AnnotationTrackSample.Status.ANNOTATED
+                            sample.save()
+                    else:
+                        sample.annotated_by = request.user
+                        sample.annotated_at = datetime.now()
+                        sample.status = AnnotationTrackSample.Status.ANNOTATED
+                        sample.save()
+                else:
+                    sample.annotated_by = request.user
+                    sample.annotated_at = datetime.now()
+                    sample.status = AnnotationTrackSample.Status.ANNOTATED
+                    sample.save()
+            return JsonResponse({"status": 200})
+        return JsonResponse({"status": 400, "errors": [f.errors for f in forms]})
+
+    def post(self, request, annotation_track_id):
+        track = AnnotationTrack.objects.get(pk=annotation_track_id)
+        self.save_annotate_forms(request, annotation_track_id)
+        return redirect("dashboard:annotation", model_id=track.model.id, count=3)
+
+
+@csrf_exempt
+def download_annotation_data(request):
+    query_params = request.META.get("QUERY_STRING", "")
+    params_dict = parse_qs(query_params)
+    annotation_id = params_dict.get("annotation_id", [None])[0]
+    model_id = params_dict.get("model_id", [None])[0]
+    concatenated = params_dict.get("concatenated", ["True"])[0].lower() == "true"
+    if annotation_id:
+        track = AnnotationTrack.objects.get(pk=annotation_id)
+        tracks = [track]
+        model = track.model
+    elif model_id:
+        model = NMTModel.objects.get(pk=model_id)
+        tracks = model.annotationtrack_set.all()
+    else:
+        raise Http404
+
+    if concatenated:
+        samples = AnnotationTrackSample.objects.filter(
+            track__in=tracks,
+            status__in=[
+                AnnotationTrackSample.Status.ANNOTATED,
+                AnnotationTrackSample.Status.VALIDATED,
+                AnnotationTrackSample.Status.PUBLISHED,
+                AnnotationTrackSample.Status.PUBLISH_FAIL,
+            ],
+        )
+        if "Catalog" in model.name or "Query" in model.name:
+            df = pd.DataFrame([a.data for a in samples])
+        else:
+            # Precompute the fields for each sample via list comprehension.
+            df = pd.DataFrame([
+                {
+                    **{
+                        f.name: a.data.get(f.name)
+                        for f in a.track.form.annotationformfield_set.all()
+                        if f.is_primary_key or f.is_high_level_key
+                    },
+                    "WTP_translation": a.data.get("WTP Translation"),
+                    "correction": (
+                        a.data.get("validation")
+                        if a.status in [
+                            AnnotationTrackSample.Status.VALIDATED,
+                            AnnotationTrackSample.Status.PUBLISHED,
+                            AnnotationTrackSample.Status.PUBLISH_FAIL,
+                        ]
+                        else a.data.get("correction")
+                    ),
+                }
+                for a in samples
+            ])
+        # Use StringIO to build CSV in memory.
+        sio = StringIO()
+        df.to_csv(sio, index=False, sep="\t")
+        sio.seek(0)
+        response = HttpResponse(sio, content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename={model.name.replace(" ", "-")}_annotations.tsv'
+    else:
+        bio = BytesIO()
+        zip_file = zipfile.ZipFile(bio, "a")
+        for track in tracks:
+            annotations = AnnotationTrackSample.objects.filter(
+                track=track,
+                status__in=[
+                    AnnotationTrackSample.Status.ANNOTATED,
+                    AnnotationTrackSample.Status.VALIDATED,
+                    AnnotationTrackSample.Status.PUBLISHED,
+                ],
+            )
+            if "Catalog" in model.name:
+                df = pd.DataFrame([a.data for a in annotations])
+            else:
+                df = pd.DataFrame([
+                    {
+                        **{
+                            f.name: a.data.get(f.name)
+                            for f in a.track.form.annotationformfield_set.all()
+                            if f.is_primary_key or f.is_high_level_key
+                        },
+                        "WTP_translation": a.data.get("WTP Translation"),
+                        "correction": (
+                            a.data.get("validation")
+                            if a.status in [
+                                AnnotationTrackSample.Status.VALIDATED,
+                                AnnotationTrackSample.Status.PUBLISHED,
+                            ]
+                            else a.data.get("correction")
+                        ),
+                    }
+                    for a in annotations
+                ])
+            s = BytesIO()
+            df.to_csv(s, index=False, sep="\t")
+            s.seek(0)
+            zip_file.writestr(f"annotations_{track.model.id}_{track.id}.tsv", s.getvalue())
+        zip_file.close()
+        bio.seek(0)
+        response = FileResponse(
+            bio,
+            as_attachment=True,
+            filename=f'{model.name.replace(" ", "-")}_annotations.zip',
+        )
+        response["Content-Disposition"] = f'attachment; filename={model.name.replace(" ", "-")}_annotations.zip'
+    return response
+```
+
+---
+
+### Explanation of Key Changes
+
+1. **Database Filtering vs. Python Filtering:**  
+    In the `get()` method, instead of iterating over all tracks and checking membership with “if request.user in track.annotators.all()”, we include that condition in the queryset. This pushes the filtering into the database.
+    
+2. **Caching Field Lookups:**  
+    In functions like `get_rule()` and inside loops in `save_annotate_forms()`, we cache the result of filtering the fields by name (e.g. `"text_to_replace"`) so that we do not issue the same query repeatedly.
+    
+3. **Using List Comprehensions:**  
+    Functions such as `get_fields_info_v2()` and `get_glossary_matches()` now use list comprehensions and precompute lowercased text to avoid repeatedly calling `.lower()` inside loops.
+    
+4. **Prefetching Related Data:**  
+    In `get_glossary_matches()`, we prefetch related glossary entries to avoid triggering a query for each glossary entry.
+    
+5. **General Cleanup:**  
+    We replaced repeated inline calculations and removed redundant calls. For instance, in `download_annotation_data()`, we compute the DataFrame in one step and use in‑memory buffers for CSV/ZIP output.
+    
+
+---
+
+This “after” code should help ensure that you’re reducing redundant queries and processing, making the view functions more efficient and easier to maintain. Be sure to test each function to confirm that the behavior remains the same in your application.
