@@ -195,16 +195,30 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Untitled 1.md",
+                "file": "cte/ItemTranslationService.md",
                 "mode": "preview",
                 "source": true
               },
               "icon": "lucide-file",
-              "title": "Untitled 1"
+              "title": "ItemTranslationService"
+            }
+          },
+          {
+            "id": "041e0d6740c36bbb",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "cte/ContentTranslationEngineController.md",
+                "mode": "preview",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "ContentTranslationEngineController"
             }
           }
         ],
-        "currentTab": 13
+        "currentTab": 14
       }
     ],
     "direction": "vertical"
@@ -347,10 +361,12 @@
       "github-sync:Sync with Remote": false
     }
   },
-  "active": "423896dfee856a90",
+  "active": "aa74c3996d6db0d1",
   "lastOpenFiles": [
+    "cte/ItemTranslationService.md",
+    "cte/ContentTranslationEngineController.md",
+    "cte",
     "Untitled.md",
-    "Untitled 1.md",
     "Untitled 10.md",
     "Untitled 9.md",
     "Untitled 8.md",
