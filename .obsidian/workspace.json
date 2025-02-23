@@ -209,16 +209,44 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "cte/ContentTranslationEngineController.md",
+                "file": "cte/ItemTranslationService.md",
                 "mode": "preview",
                 "source": true
               },
               "icon": "lucide-file",
-              "title": "ContentTranslationEngineController"
+              "title": "ItemTranslationService"
+            }
+          },
+          {
+            "id": "3dd4ff25575e9747",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "cte/ItemTranslationService.md",
+                "mode": "source",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "ItemTranslationService"
+            }
+          },
+          {
+            "id": "08157ebbca1ae5b1",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Untitled 1.md",
+                "mode": "source",
+                "source": true
+              },
+              "icon": "lucide-file",
+              "title": "Untitled 1"
             }
           }
         ],
-        "currentTab": 14
+        "currentTab": 16
       }
     ],
     "direction": "vertical"
@@ -361,9 +389,10 @@
       "github-sync:Sync with Remote": false
     }
   },
-  "active": "aa74c3996d6db0d1",
+  "active": "08157ebbca1ae5b1",
   "lastOpenFiles": [
     "cte/ItemTranslationService.md",
+    "Untitled 1.md",
     "cte/ContentTranslationEngineController.md",
     "cte",
     "Untitled.md",
